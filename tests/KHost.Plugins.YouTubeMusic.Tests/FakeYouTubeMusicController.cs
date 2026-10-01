@@ -52,6 +52,7 @@ public sealed class FakeYouTubeMusicController : IYouTubeMusicController
         => Command($"launch:{startUrl}");
 
     public Task<bool> OpenSetupAsync(CancellationToken cancellationToken = default) => Command("setup");
+    public Task<bool> ShowAppAsync(CancellationToken cancellationToken = default) => Command("show");
     public Task<bool> PlayAsync(CancellationToken cancellationToken = default) => Command("play");
     public Task<bool> PauseAsync(CancellationToken cancellationToken = default) => Command("pause");
     public Task<bool> SkipAsync(CancellationToken cancellationToken = default) => Command("skip");

@@ -1,4 +1,4 @@
-namespace KHost.Plugins.YouTubeMusic.Mac;
+namespace KHost.Plugins.YouTubeMusic.Helper;
 
 /// <summary>When to tell the page someone is still there. YouTube Music pauses behind "Are you
 /// still there?" after a long stretch with no input; marking the page active well inside that keeps

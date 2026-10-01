@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <!-- The Windows target carries the WinRT projection for Windows.Media.Control and is the only
-         one that drives Windows. The plain target drives Chrome on macOS through Apple Events, and
-         elsewhere loads and reports itself unavailable. -->
+         one that drives Windows. Both drive the macOS helper app (helpers/macos), which every build
+         carries; on Linux the plugin loads and reports itself unavailable. -->
     <TargetFrameworks>net10.0;net10.0-windows10.0.19041.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -46,9 +46,81 @@
 
   <ItemGroup>
     <Content Include="manifest.json" CopyToOutputDirectory="PreserveNewest" />
-    <!-- The script the macOS controller sends to the page; one file so it can be read whole. -->
-    <EmbeddedResource Include="Mac\youtube-music-page.js" LogicalName="KHost.Plugins.YouTubeMusic.Mac.youtube-music-page.js" />
   </ItemGroup>
+
+  <!-- The macOS helper app, "YouTube Music.app", goes in helper/ beside the plugin's files in every
+       build, Windows target included, since that is the blank-Rid release a Mac installs too. On a
+       Mac with the Xcode command line tools it is built from helpers/macos; anywhere else the copy
+       committed under helpers/macos/prebuilt is shipped, and only while its stamp still matches
+       those sources. -p:MacHelperFromSource=false ships the prebuilt copy on a Mac too, as a Windows
+       build would; -p:SkipMacHelper=true builds without the app at all. -->
+  <PropertyGroup>
+    <_HelperSourceDir>$([MSBuild]::NormalizeDirectory($(MSBuildProjectDirectory), ..\..\helpers\macos))</_HelperSourceDir>
+    <_HelperPrebuiltApp>$(_HelperSourceDir)prebuilt/YouTube Music.app</_HelperPrebuiltApp>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The order sources.sha256 lists them in. -->
+    <_HelperSource Include="$(_HelperSourceDir)main.swift" />
+    <_HelperSource Include="$(_HelperSourceDir)youtube-music-page.js" />
+    <_HelperSource Include="$(_HelperSourceDir)Info.plist.in" />
+    <_HelperSource Include="$(_HelperSourceDir)build.sh" />
+  </ItemGroup>
+
+  <!-- Set in a target: IntermediateOutputPath is not known yet while this file is read, and each
+       target framework needs its own folder or their parallel builds write over each other. -->
+  <Target Name="_HelperPaths">
+    <PropertyGroup>
+      <_HelperBuildDir>$([MSBuild]::NormalizeDirectory($(MSBuildProjectDirectory), $(IntermediateOutputPath), ytm-helper))</_HelperBuildDir>
+      <_HelperBuiltExecutable>$(_HelperBuildDir)YouTube Music.app/Contents/MacOS/khost-youtube-music-helper</_HelperBuiltExecutable>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="_FindSwift" DependsOnTargets="_HelperPaths" Condition="$([MSBuild]::IsOSPlatform('OSX')) And '$(SkipMacHelper)' != 'true' And '$(MacHelperFromSource)' != 'false'">
+    <Exec Command="xcrun --sdk macosx --find swiftc" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ExitCode" PropertyName="_SwiftExitCode" />
+    </Exec>
+    <Message Importance="high" Condition="'$(_SwiftExitCode)' != '0'"
+             Text="YouTube Music helper: no Swift compiler here (install the Xcode command line tools: xcode-select --install); shipping helpers/macos/prebuilt instead." />
+  </Target>
+
+  <Target Name="BuildMacHelper" DependsOnTargets="_FindSwift"
+          Condition="$([MSBuild]::IsOSPlatform('OSX')) And '$(SkipMacHelper)' != 'true' And '$(MacHelperFromSource)' != 'false'"
+          Inputs="@(_HelperSource)" Outputs="$(_HelperBuiltExecutable)">
+    <Exec Condition="'$(_SwiftExitCode)' == '0'" Command="/bin/bash &quot;$(_HelperSourceDir)build.sh&quot; &quot;$(_HelperBuildDir)&quot;" />
+  </Target>
+
+  <Target Name="_CheckPrebuiltHelper">
+    <GetFileHash Files="@(_HelperSource)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_HelperSourceHash" />
+    </GetFileHash>
+    <ReadLinesFromFile File="$(_HelperSourceDir)prebuilt/sources.sha256" Condition="Exists('$(_HelperSourceDir)prebuilt/sources.sha256')">
+      <Output TaskParameter="Lines" ItemName="_HelperStampLine" />
+    </ReadLinesFromFile>
+    <PropertyGroup>
+      <_HelperExpectedStamp>@(_HelperSourceHash->'%(FileHash)  %(Filename)%(Extension)', ';')</_HelperExpectedStamp>
+      <_HelperStamp>@(_HelperStampLine, ';')</_HelperStamp>
+      <_HelperPrebuiltFresh Condition="Exists('$(_HelperPrebuiltApp)') And '$(_HelperExpectedStamp.ToLowerInvariant())' == '$(_HelperStamp.ToLowerInvariant())'">true</_HelperPrebuiltFresh>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="PackageMacHelper" BeforeTargets="AssignTargetPaths" DependsOnTargets="_HelperPaths;BuildMacHelper;_CheckPrebuiltHelper"
+          Condition="'$(SkipMacHelper)' != 'true'">
+    <PropertyGroup>
+      <_HelperApp Condition="'$(MacHelperFromSource)' != 'false' And Exists('$(_HelperBuiltExecutable)')">$(_HelperBuildDir)YouTube Music.app</_HelperApp>
+      <_HelperApp Condition="'$(_HelperApp)' == '' And '$(_HelperPrebuiltFresh)' == 'true'">$(_HelperPrebuiltApp)</_HelperApp>
+    </PropertyGroup>
+
+    <Error Condition="'$(_HelperApp)' == ''"
+           Text="YouTube Music helper: helpers/macos/prebuilt is missing or older than helpers/macos, and it cannot be built here. Run helpers/macos/build.sh --prebuilt on a Mac, or pass -p:SkipMacHelper=true for a build that will not play on macOS." />
+    <Warning Condition="'$(_HelperApp)' != '$(_HelperPrebuiltApp)' And '$(_HelperPrebuiltFresh)' != 'true'"
+             Text="YouTube Music helper: helpers/macos/prebuilt is older than helpers/macos. A release built off a Mac would refuse to ship it; run helpers/macos/build.sh --prebuilt." />
+
+    <ItemGroup>
+      <_HelperFile Include="$(_HelperApp)/**/*" />
+      <None Include="@(_HelperFile)" Link="helper/YouTube Music.app/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
 
   <!-- Dev convenience: drop the built plugin into a sibling KHost checkout's runtime plugins
        folder when one exists. Harmless no-op anywhere else. -->

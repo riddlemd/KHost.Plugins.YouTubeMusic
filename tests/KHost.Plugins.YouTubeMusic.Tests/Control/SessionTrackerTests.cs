@@ -174,4 +174,51 @@ public class SessionTrackerTests
         Assert.True(_tracker.PauseRequestedSince(Start));
         Assert.False(_tracker.PauseRequestedSince(Start.AddMilliseconds(1)));
     }
+
+    // Measured on the helper: a track running out reports itself ended (state 0) before the next one
+    // buffers. Taken at its word the console reads Stopped between every pair of songs.
+    [Fact]
+    public void Observe_TrackEndsThenTheNextStarts_HoldsTheEndAndReportsOneChange()
+    {
+        _tracker.Observe(SongA, Start);
+
+        var ended = _tracker.Observe(SongA with { Playback = SessionPlayback.Stopped }, Start.AddMilliseconds(100));
+        var next = _tracker.Observe(SongB, Start.AddMilliseconds(600));
+
+        Assert.True(ended.Pending);
+        Assert.False(ended.Changed);
+        Assert.Equal(BreakMusicPlayback.Playing, ended.Playback);
+        Assert.True(next.Changed);
+        Assert.False(next.UnexpectedPause);
+        Assert.Equal("Temptation", _tracker.Track!.Title);
+    }
+
+    // The end of the list is a real stop: held for the window, then reported.
+    [Fact]
+    public void Observe_EndedOutlastingTheWindow_SettlesAsStopped()
+    {
+        var ended = SongA with { Playback = SessionPlayback.Stopped };
+        _tracker.Observe(SongA, Start);
+        _tracker.Observe(ended, Start.AddMilliseconds(100));
+
+        var observation = _tracker.Observe(ended, Start.AddMilliseconds(100) + SessionTracker.TransientWindow);
+
+        Assert.False(observation.Pending);
+        Assert.Equal(BreakMusicPlayback.Stopped, observation.Playback);
+        Assert.False(observation.UnexpectedPause);
+    }
+
+    // The next track loading at a boundary (buffering while paused) is a change, never a pause to undo.
+    [Fact]
+    public void Observe_BoundaryBufferingThenPlaying_IsNoUnexpectedPause()
+    {
+        _tracker.Observe(SongA, Start);
+
+        var loading = _tracker.Observe(SongB with { Playback = SessionPlayback.Changing }, Start.AddMilliseconds(100));
+        var playing = _tracker.Observe(SongB, Start.AddMilliseconds(400));
+
+        Assert.True(loading.Pending);
+        Assert.False(loading.UnexpectedPause);
+        Assert.False(playing.UnexpectedPause);
+    }
 }

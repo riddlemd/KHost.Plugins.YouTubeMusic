@@ -1,0 +1,2 @@
+# The prebuilt helper is checked against these bytes; line-ending conversion would fail that check.
+helpers/macos/** -text

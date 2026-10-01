@@ -1,6 +1,6 @@
-using KHost.Plugins.YouTubeMusic.Mac;
+using KHost.Plugins.YouTubeMusic.Helper;
 
-namespace KHost.Plugins.YouTubeMusic.Tests.Mac;
+namespace KHost.Plugins.YouTubeMusic.Tests.Helper;
 
 public class KeepAliveScheduleTests
 {

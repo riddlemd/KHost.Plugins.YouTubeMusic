@@ -18,6 +18,8 @@ public enum SessionPlayback
 /// <param name="Duration">Zero when the session did not say.</param>
 /// <param name="IsAdvert">The backend could see an advert was on, whatever it was titled. Windows'
 /// media session cannot say, so there only <see cref="SessionRules.IsAdvert"/> decides.</param>
+/// <param name="SignedIn">Whether the page is signed in to a Google account; null where the backend
+/// cannot tell (Windows always) or the page has not said yet.</param>
 public sealed record SessionSnapshot(
     SessionPlayback Playback,
     string? Title = null,
@@ -25,7 +27,8 @@ public sealed record SessionSnapshot(
     TimeSpan Position = default,
     DateTimeOffset LastUpdated = default,
     TimeSpan Duration = default,
-    bool IsAdvert = false)
+    bool IsAdvert = false,
+    bool? SignedIn = null)
 {
     public static readonly SessionSnapshot None = new(SessionPlayback.None);
 

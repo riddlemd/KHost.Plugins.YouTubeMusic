@@ -16,7 +16,8 @@ public sealed record SessionObservation(
 public sealed class SessionTracker
 {
     /// <summary>A skip reports a closed session with no title for about 200ms before the next
-    /// track arrives; anything shorter than this is that, not the music stopping.</summary>
+    /// track arrives, and a track running out reports itself ended (Stopped) before the next one
+    /// buffers; anything shorter than this is that, not the music stopping.</summary>
     public static readonly TimeSpan TransientWindow = TimeSpan.FromMilliseconds(750);
 
     /// <summary>The app reports a pause it was asked for within about 50ms. A pause later than
@@ -95,8 +96,10 @@ public sealed class SessionTracker
         }
     }
 
+    /// <summary>Stopped counts: at a track boundary the page reports the old track ended, and taking
+    /// that at its word flickers the console to Stopped between every pair of songs.</summary>
     private static bool IsTransient(SessionSnapshot snapshot)
-        => snapshot.Playback is SessionPlayback.None or SessionPlayback.Changing
+        => snapshot.Playback is SessionPlayback.None or SessionPlayback.Changing or SessionPlayback.Stopped
            || string.IsNullOrWhiteSpace(snapshot.Title);
 
     private static bool HoldsATrack(SessionSnapshot? snapshot)
