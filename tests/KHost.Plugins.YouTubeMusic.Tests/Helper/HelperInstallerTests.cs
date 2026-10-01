@@ -142,4 +142,33 @@ public sealed class HelperInstallerTests : IDisposable
         File.WriteAllText(Path.Combine(_shipped, "Contents", "Resources", "youtube-music-page.js"), "script 1!");
         Assert.NotEqual(before, HelperInstaller.TreeHash(_shipped));
     }
+
+    // NSWorkspace.setIcon writes this zero-byte marker into a bundle once the helper has fetched
+    // music.youtube.com's icon; the shipped app never has one, so it must not count toward the hash.
+    [Fact]
+    public void TreeHash_IgnoresFinderCustomIconFile()
+    {
+        Ship("1");
+        var before = HelperInstaller.TreeHash(_shipped);
+
+        File.WriteAllBytes(Path.Combine(_shipped, "Icon\r"), []);
+
+        Assert.Equal(before, HelperInstaller.TreeHash(_shipped));
+    }
+
+    // Without the TreeHash exemption above, this reinstalls from the icon-less shipped copy on
+    // every single start and wipes the custom icon the helper just set.
+    [Fact]
+    public void Install_InstalledCarriesAFinderCustomIcon_StaysUnchanged()
+    {
+        Ship("1");
+        HelperInstaller.Install(_shipped, _bin, () => false);
+        var iconMarker = Path.Combine(Installed, "Icon\r");
+        File.WriteAllBytes(iconMarker, []);
+
+        var result = HelperInstaller.Install(_shipped, _bin, () => throw new InvalidOperationException("not asked when unchanged"));
+
+        Assert.Equal(HelperInstallOutcome.Unchanged, result.Outcome);
+        Assert.True(File.Exists(iconMarker));
+    }
 }

@@ -17,6 +17,11 @@
 // Whoever launched it, the helper also listens on a Unix socket in ~/Library/Caches/<bundle id>/
 // (owner-only), so a host can drive a copy the user opened from the Dock, and a second copy can
 // tell that one is already up.
+//
+// The app icon is never shipped: it is fetched at runtime from music.youtube.com's own web app
+// manifest (apple-touch-icon, then favicon, as fallbacks), the way a browser's "install as app"
+// does it, cached under ~/Library/Caches/<bundle id>/app-icon.png, and written onto the bundle on
+// disk with NSWorkspace.setIcon so Finder and the Dock-when-not-running show it too. See AppIcon.
 
 import Cocoa
 import WebKit
@@ -112,6 +117,113 @@ func holdLevel(_ level: Double?, in controller: WKUserContentController) {
     })(\(level));
     """
     controller.addUserScript(WKUserScript(source: hold, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+}
+
+// MARK: - App icon
+
+/// The Dock icon this helper shows while it runs, and the one Finder shows for its bundle on disk:
+/// fetched at runtime from music.youtube.com's own web app manifest, the way a browser's "install
+/// as app" does it, so no Google artwork is ever committed to this repo or shipped in the plugin's
+/// zip. Falls back to apple-touch-icon, then favicon, then the generic app icon when none of that
+/// is reachable and nothing was cached from an earlier run.
+final class AppIcon {
+    private let bundleId: String
+    private let session = URLSession(configuration: .ephemeral)
+
+    init(bundleId: String) { self.bundleId = bundleId }
+
+    private var cachePath: String { NSHomeDirectory() + "/Library/Caches/" + bundleId + "/app-icon.png" }
+
+    /// Shows the cached icon immediately — a cold cache leaves the generic one until the fetch
+    /// below lands, or forever when this Mac is offline — then goes to fetch the live one.
+    func apply() {
+        if let data = FileManager.default.contents(atPath: cachePath), let image = NSImage(data: data) {
+            NSApp.applicationIconImage = image
+        }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in self?.fetchAndApply() }
+    }
+
+    private func fetchAndApply() {
+        guard let data = downloadIcon(), let image = NSImage(data: data) else { return }
+
+        let path = cachePath
+        try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                                  withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+
+        DispatchQueue.main.async {
+            NSApp.applicationIconImage = image
+            // Finder and the Dock-when-not-running read this off the bundle on disk, not the
+            // running process; HelperInstaller.TreeHash skips the "Icon\r" file this call writes,
+            // or every start would see a changed tree against the icon-less shipped build and
+            // reinstall right over it.
+            if !NSWorkspace.shared.setIcon(image, forFile: Bundle.main.bundlePath, options: []) {
+                log("setIcon on \(Bundle.main.bundlePath) failed")
+            }
+        }
+    }
+
+    private func downloadIcon() -> Data? {
+        iconFromManifest()
+            ?? iconFromLinkTag(rel: "apple-touch-icon")
+            ?? iconFromLinkTag(rel: "icon")
+            ?? URL(string: "https://music.youtube.com/favicon.ico").flatMap(get)
+    }
+
+    /// The manifest the page itself links as `rel="manifest"`; icons carry their square size in
+    /// `sizes`, so the largest non-maskable PNG is the one a Dock icon wants.
+    private func iconFromManifest() -> Data? {
+        guard let url = URL(string: "https://music.youtube.com/manifest.webmanifest"), let data = get(url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let icons = json["icons"] as? [[String: Any]], !icons.isEmpty else { return nil }
+
+        let pngs = icons.filter { ($0["type"] as? String ?? "image/png") == "image/png" }
+        let ranked = (pngs.isEmpty ? icons : pngs).sorted { squareSize($0) > squareSize($1) }
+        let best = ranked.first { ($0["purpose"] as? String ?? "any") != "maskable" } ?? ranked.first
+
+        guard let src = best?["src"] as? String, let iconUrl = URL(string: src) else { return nil }
+        return get(iconUrl)
+    }
+
+    private func squareSize(_ icon: [String: Any]) -> Int {
+        guard let sizes = icon["sizes"] as? String, let width = sizes.split(separator: "x").first else { return 0 }
+        return Int(width) ?? 0
+    }
+
+    /// A page the manifest fetch could not read still names an icon in its own `<head>`.
+    private func iconFromLinkTag(rel: String) -> Data? {
+        guard let home = URL(string: "https://music.youtube.com/"), let data = get(home),
+              let html = String(data: data, encoding: .utf8) else { return nil }
+
+        let pattern = "<link[^>]*rel=\"\(rel)\"[^>]*href=\"([^\"]+)\"[^>]*>"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let range = Range(match.range(at: 1), in: html),
+              let iconUrl = URL(string: String(html[range]), relativeTo: home) else { return nil }
+
+        return get(iconUrl.absoluteURL)
+    }
+
+    /// Synchronous: every call here already runs on the background queue `apply()` started, one
+    /// request at a time, with a short timeout so an offline room gives up quickly.
+    private func get(_ url: URL) -> Data? {
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.setValue(safariUserAgent(), forHTTPHeaderField: "User-Agent")
+
+        var result: Data?
+        let group = DispatchGroup()
+        group.enter()
+        session.dataTask(with: request) { data, response, _ in
+            if let http = response as? HTTPURLResponse, http.statusCode == 200,
+               let data, !data.isEmpty, data.count < 4_000_000 {
+                result = data
+            }
+            group.leave()
+        }.resume()
+        _ = group.wait(timeout: .now() + 10)
+        return result
+    }
 }
 
 // MARK: - Line transport
@@ -313,6 +425,7 @@ final class Helper: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
     var popups: [NSWindow: WKWebView] = [:]
     var server: SocketServer?
     var activity: NSObjectProtocol?
+    var appIcon: AppIcon?
     let userAgent = safariUserAgent()
     let stdout = StdoutSink()
     lazy var pageSource: String = {
@@ -325,6 +438,9 @@ final class Helper: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
     }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        appIcon = AppIcon(bundleId: bundleId)
+        appIcon?.apply()
+
         buildMenu()
 
         let configuration = WKWebViewConfiguration()
