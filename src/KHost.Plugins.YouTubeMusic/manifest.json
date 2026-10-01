@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/riddlemd/KHost/main/src/KHost.Abstractions/Models/Plugins/manifest.schema.json",
+  "id": "0ebd4267-16d2-495e-9c3e-f8f49b6ec389",
+  "name": "YouTube Music Break Music",
+  "version": "0.1.0",
+  "author": "KHost",
+  "description": "Plays break music through the YouTube Music app installed in Microsoft Edge on this machine (Windows only).",
+  "icon": "youtube",
+  "entryAssembly": "KHost.Plugins.YouTubeMusic.dll",
+  "apiVersion": 5,
+  "settings": [
+    { "key": "playlistUrl", "type": "string", "section": "Break music", "label": "Playlist (YouTube Music link — blank resumes whatever the app has loaded)" },
+    { "key": "launchIfNotRunning", "type": "bool", "section": "Break music", "label": "Open YouTube Music if it is not already running", "default": true },
+    { "key": "fadeMilliseconds", "type": "int", "section": "Break music", "label": "Fade out when a singer starts, in milliseconds (0 cuts at once)", "default": 1500 },
+    { "key": "recoverUnexpectedPause", "type": "bool", "section": "Break music", "label": "Press play again when YouTube Music pauses by itself (\"Are you still there?\")", "default": true },
+    { "key": "profileDirectory", "type": "string", "section": "Edge profile", "label": "Edge profile folder for YouTube Music (blank uses KHost's own under Local AppData)" }
+  ],
+  "buttons": [
+    { "key": "setup", "label": "Set up YouTube Music", "icon": "box-arrow-up-right" },
+    { "key": "open", "label": "Open YouTube Music", "icon": "play-circle" }
+  ]
+}

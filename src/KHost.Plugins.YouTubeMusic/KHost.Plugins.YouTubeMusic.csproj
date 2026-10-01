@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The Windows target is the only one that can drive anything: it carries the WinRT projection
+         for Windows.Media.Control. The plain target builds and loads everywhere and reports itself
+         unavailable, so one catalog entry with a blank Rid can still name its limitation. -->
+    <TargetFrameworks>net10.0;net10.0-windows10.0.19041.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- Off Windows the Windows reference pack must be asked for, or the whole build fails NETSDK1100,
+       the plain target included. -->
+  <PropertyGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
+    <DefineConstants>$(DefineConstants);WINDOWS_MEDIA_SESSION</DefineConstants>
+    <!-- The host is a plain net10.0 process with no WinRT projection of its own; without a copy
+         beside the plugin the first media-session read throws FileNotFoundException. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <_DeployTargetFramework Condition="$([MSBuild]::IsOSPlatform('Windows'))">net10.0-windows10.0.19041.0</_DeployTargetFramework>
+    <_DeployTargetFramework Condition="!$([MSBuild]::IsOSPlatform('Windows'))">net10.0</_DeployTargetFramework>
+    <_KHostOutputDir>$(MSBuildProjectDirectory)\..\..\..\KHost\src\KHost.UserInterface\bin\Debug\net10.0</_KHostOutputDir>
+    <_PluginDeployDir>$(_KHostOutputDir)\plugins\khost.youtube-music</_PluginDeployDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Not ExcludeAssets="runtime": the package's own build/ targets already keep both out of this
+         plugin's output, and excluding runtime here would strip them from the test project too. -->
+    <PackageReference Include="KHost.Abstractions" Version="0.43.0" />
+    <PackageReference Include="KHost.Common" Version="0.43.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The controller seam is internal so ActivatorUtilities never sees a constructor the host
+         cannot fill; the tests inject a fake through it. -->
+    <InternalsVisibleTo Include="KHost.Plugins.YouTubeMusic.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="manifest.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Opt-in (-p:DeployToKHost=true): an automatic copy into a sibling checkout's runtime folder
+       would load this plugin into whatever host is started there next. -->
+  <Target Name="DeployToSiblingKHost" AfterTargets="Build"
+          Condition="'$(DeployToKHost)' == 'true' And Exists('$(_KHostOutputDir)') And '$(TargetFramework)' == '$(_DeployTargetFramework)'">
+    <ItemGroup>
+      <_StalePluginFiles Include="$(_PluginDeployDir)\**\*" />
+      <_PluginFiles Include="$(TargetDir)**\*" />
+    </ItemGroup>
+
+    <!-- Emptied first so the two target frameworks never layer: only one ships the projection. -->
+    <Delete Files="@(_StalePluginFiles)" ContinueOnError="true" />
+
+    <Copy SourceFiles="@(_PluginFiles)"
+          DestinationFiles="@(_PluginFiles->'$(_PluginDeployDir)\%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
+
+</Project>
