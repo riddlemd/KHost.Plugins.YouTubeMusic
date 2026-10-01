@@ -3,6 +3,7 @@ using KHost.Abstractions.Messaging;
 using KHost.Abstractions.Messaging.Messages;
 using KHost.Abstractions.Models;
 using KHost.Abstractions.Services;
+using KHost.Plugins.YouTubeMusic.Audio;
 using KHost.Plugins.YouTubeMusic.Control;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -24,6 +25,9 @@ public class YouTubeMusicBreakMusicProviderTests
     /// <summary>Called with each delay the provider takes, after the clock has moved past it.</summary>
     private Action<TimeSpan>? _onDelay;
 
+    /// <summary>A task to wait on instead of returning at once; null lets the delay pass.</summary>
+    private Func<TimeSpan, CancellationToken, Task?>? _holdDelay;
+
     private YouTubeMusicBreakMusicProvider Build(YouTubeMusicSettings? settings = null)
     {
         _context.BindSettings<YouTubeMusicSettings>().Returns(settings ?? new YouTubeMusicSettings());
@@ -35,9 +39,31 @@ public class YouTubeMusicBreakMusicProviderTests
                 _clock.Advance(span);
                 _onDelay?.Invoke(span);
                 token.ThrowIfCancellationRequested();
-                return Task.CompletedTask;
+                return _holdDelay?.Invoke(span, token) ?? Task.CompletedTask;
             });
     }
+
+    /// <summary>Holds the <paramref name="nth"/> fade step (1-based) until its token is cancelled.</summary>
+    private void HoldFadeStep(int nth)
+    {
+        var seen = 0;
+        _holdDelay = (span, token) =>
+            span == FadeCurve.StepInterval && ++seen == nth ? Task.Delay(Timeout.Infinite, token) : null;
+    }
+
+    /// <summary>A fade-in runs on after the call that began it returns.</summary>
+    private static async Task UntilAsync(Func<bool> condition)
+    {
+        for (var waited = 0; !condition() && waited < 5000; waited += 10)
+            await Task.Delay(10);
+
+        Assert.True(condition(), "Timed out waiting for the level to settle.");
+    }
+
+    private static readonly YouTubeMusicSettings NoFade = new() { FadeMilliseconds = 0 };
+
+    /// <summary>300ms: three steps, 0.1, 0.01 and 0 down; 0.01, 0.1 and 1 up.</summary>
+    private static readonly YouTubeMusicSettings ShortFade = new() { FadeMilliseconds = 300 };
 
     [Fact]
     public void RendersThroughHost_IsFalse_BecauseTheSoundLeavesEdgesOwnOutput()
@@ -59,7 +85,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = Paused;
 
-        Assert.True(await Build(new YouTubeMusicSettings { PlaylistUrl = Playlist }).StartAsync());
+        Assert.True(await Build(new YouTubeMusicSettings { PlaylistUrl = Playlist, FadeMilliseconds = 0 }).StartAsync());
         Assert.Equal(["play", "level:1"], _controller.Calls);
     }
 
@@ -69,7 +95,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = SessionSnapshot.None;
         _controller.OnCommand = command => command.StartsWith("launch:", StringComparison.Ordinal) ? Playing : null;
 
-        Assert.True(await Build(new YouTubeMusicSettings { PlaylistUrl = Playlist }).StartAsync());
+        Assert.True(await Build(new YouTubeMusicSettings { PlaylistUrl = Playlist, FadeMilliseconds = 0 }).StartAsync());
         Assert.Equal(["launch:https://music.youtube.com/watch?list=PLbed", "level:1"], _controller.Calls);
     }
 
@@ -79,7 +105,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = SessionSnapshot.None;
         _controller.OnCommand = command => command.StartsWith("launch:", StringComparison.Ordinal) ? Paused : null;
 
-        Assert.True(await Build().StartAsync());
+        Assert.True(await Build(NoFade).StartAsync());
         Assert.Equal(["launch:", "play", "level:1"], _controller.Calls);
     }
 
@@ -235,6 +261,192 @@ public class YouTubeMusicBreakMusicProviderTests
     }
 
     [Fact]
+    public async Task PauseAsync_PlayingWithAFade_StepsDownThenPausesThenRestoresTheLevel()
+    {
+        _controller.Snapshot = Playing;
+        _controller.OnCommand = command => command == "pause" ? Paused : null;
+
+        var provider = Build(ShortFade);
+        await provider.SetVolumeAsync(0.5f);
+        _controller.Calls.Clear();
+
+        await provider.PauseAsync();
+
+        Assert.Equal(["level:0.5", "level:0.05", "level:0.005", "level:0", "pause", "level:0.5"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task PauseAsync_FadeSetToZero_PausesAtOnce()
+    {
+        _controller.Snapshot = Playing;
+
+        await Build(NoFade).PauseAsync();
+
+        Assert.Equal(["pause"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task PauseAsync_NotPlaying_PausesWithoutAFade()
+    {
+        _controller.Snapshot = Paused;
+
+        await Build(ShortFade).PauseAsync();
+
+        Assert.Equal(["pause"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task PauseAsync_CancelledMidFade_StillPausesAndRestoresTheLevel()
+    {
+        _controller.Snapshot = Playing;
+        _controller.OnCommand = command => command == "pause" ? Paused : null;
+        using var cancel = new CancellationTokenSource();
+        _onDelay = _ => cancel.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Build(ShortFade).PauseAsync(cancel.Token));
+
+        Assert.Equal(["level:1", "pause", "level:1"], _controller.Calls);
+    }
+
+    // Silent before play, so the room's first sound is the bottom of the rise, not a burst at full.
+    [Fact]
+    public async Task ResumeAsync_WithAFade_SilencesThenPlaysThenStepsUpToTheLevel()
+    {
+        _controller.Snapshot = Paused;
+        var provider = Build(ShortFade);
+        await provider.SetVolumeAsync(0.5f);
+        _controller.Calls.Clear();
+
+        await provider.ResumeAsync();
+
+        Assert.Equal(["level:0", "play", "level:0.005", "level:0.05", "level:0.5"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task ResumeAsync_FadeSetToZero_PlaysAtTheLevel()
+    {
+        _controller.Snapshot = Paused;
+
+        await Build(NoFade).ResumeAsync();
+
+        Assert.Equal(["play", "level:1"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task StartAsync_SessionPausedWithAFade_RisesFromSilence()
+    {
+        _controller.Snapshot = Paused;
+
+        Assert.True(await Build(ShortFade).StartAsync());
+        Assert.Equal(["level:0", "play", "level:0.01", "level:0.1", "level:1"], _controller.Calls);
+    }
+
+    // A fresh launch sounds on its own; the rise starts from the moment it is heard.
+    [Fact]
+    public async Task StartAsync_LaunchedAppAlreadySounding_CutsToSilenceAndRises()
+    {
+        _controller.Snapshot = SessionSnapshot.None;
+        _controller.OnCommand = command => command.StartsWith("launch:", StringComparison.Ordinal) ? Playing : null;
+
+        Assert.True(await Build(ShortFade).StartAsync());
+        Assert.Equal(["launch:", "level:0", "level:0.01", "level:0.1", "level:1"], _controller.Calls);
+    }
+
+    // Left at silence, the next attempt would play and nobody would hear it.
+    [Fact]
+    public async Task StartAsync_PlayRefusedWithAFade_RestoresTheLevelBeforeThrowing()
+    {
+        _controller.Snapshot = Paused;
+        _controller.CommandsSucceed = false;
+
+        await Assert.ThrowsAsync<KHostException>(() => Build(ShortFade).StartAsync());
+
+        Assert.Equal(["level:0", "play", "level:1"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task ResumeAsync_PlayRefusedWithAFade_RestoresTheLevelBeforeThrowing()
+    {
+        _controller.Snapshot = Paused;
+        _controller.CommandsSucceed = false;
+
+        await Assert.ThrowsAsync<KHostException>(() => Build(ShortFade).ResumeAsync());
+
+        Assert.Equal(["level:0", "play", "level:1"], _controller.Calls);
+    }
+
+    // The rise runs on after resume returns; a pause pressed during it must win, from where it got.
+    [Fact]
+    public async Task PauseAsync_DuringTheFadeIn_CutsItShortAndFadesFromWhereItGot()
+    {
+        _controller.Snapshot = Paused;
+        _controller.OnCommand = command => command switch { "play" => Playing, "pause" => Paused, _ => null };
+        var provider = Build(ShortFade);
+        HoldFadeStep(2);
+
+        await provider.ResumeAsync();
+        await provider.PauseAsync();
+
+        Assert.Equal(
+            ["level:0", "play", "level:0.01", "level:0.01", "level:0.001", "level:0", "level:0", "pause", "level:1"],
+            _controller.Calls);
+    }
+
+    [Fact]
+    public async Task ResumeAsync_DuringTheFadeOut_LetsThePauseLandThenRisesFromSilence()
+    {
+        _controller.Snapshot = Playing;
+        _controller.OnCommand = command => command switch { "play" => Playing, "pause" => Paused, _ => null };
+        var provider = Build(ShortFade);
+        HoldFadeStep(2);
+
+        var pausing = provider.PauseAsync();
+        await UntilAsync(() => _controller.Calls.Count == 2);
+        await provider.ResumeAsync();
+        await pausing;
+
+        Assert.Equal(
+            ["level:1", "level:0.1", "pause", "level:1", "level:0", "play", "level:0.01", "level:0.1", "level:1"],
+            _controller.Calls);
+    }
+
+    [Fact]
+    public async Task SetVolumeAsync_DuringTheFadeIn_TheRiseEndsOnTheNewLevel()
+    {
+        _controller.Snapshot = Paused;
+        var release = new TaskCompletionSource();
+        var seen = 0;
+        _holdDelay = (span, _) => span == FadeCurve.StepInterval && ++seen == 2 ? release.Task : null;
+        var provider = Build(ShortFade);
+
+        await provider.ResumeAsync();
+        await provider.SetVolumeAsync(0.5f);
+        release.SetResult();
+        await UntilAsync(() => _controller.Calls.Count == 5);
+
+        Assert.Equal(["level:0", "play", "level:0.01", "level:0.05", "level:0.5"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task SetVolumeAsync_DuringTheFadeOut_IsWhatThePauseRestores()
+    {
+        _controller.Snapshot = Playing;
+        _controller.OnCommand = command => command == "pause" ? Paused : null;
+        var release = new TaskCompletionSource();
+        var seen = 0;
+        _holdDelay = (span, _) => span == FadeCurve.StepInterval && ++seen == 2 ? release.Task : null;
+        var provider = Build(ShortFade);
+
+        var pausing = provider.PauseAsync();
+        await UntilAsync(() => _controller.Calls.Count == 2);
+        await provider.SetVolumeAsync(0.5f);
+        release.SetResult();
+        await pausing;
+
+        Assert.Equal(["level:1", "level:0.1", "level:0.01", "level:0", "pause", "level:0.5"], _controller.Calls);
+    }
+
+    [Fact]
     public async Task SkipAsync_FromPause_SkipsThenPlays()
     {
         _controller.Snapshot = Paused;
@@ -335,7 +547,7 @@ public class YouTubeMusicBreakMusicProviderTests
     [Fact]
     public async Task SessionChanged_PausedByTheHost_IsNotRecovered()
     {
-        var provider = Build();
+        var provider = Build(NoFade);
         _controller.Snapshot = Playing;
         _controller.RaiseSessionChanged();
 

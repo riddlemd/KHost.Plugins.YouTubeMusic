@@ -1,6 +1,6 @@
 namespace KHost.Plugins.YouTubeMusic.Audio;
 
-/// <summary>The steps of a fade-out, as multipliers of the level the fade starts from.</summary>
+/// <summary>The steps of a fade, as multipliers of the level the fade is measured against.</summary>
 public static class FadeCurve
 {
     /// <summary>A step every 100ms: 15 for the default 1.5s, each measured under 2ms.</summary>
@@ -27,5 +27,26 @@ public static class FadeCurve
         steps[count - 1] = 0f;
 
         return steps;
+    }
+
+    /// <summary>The fade-in from silence: the fade-out's steps walked back up, so the rise is as
+    /// even to the ear as the fall.</summary>
+    /// <returns>One multiplier per <see cref="StepInterval"/>, the last always 1; empty when
+    /// <paramref name="duration"/> is not positive.</returns>
+    public static IReadOnlyList<float> RiseSteps(TimeSpan duration)
+    {
+        var fall = GainSteps(duration);
+
+        if (fall.Count == 0)
+            return [];
+
+        var rise = new float[fall.Count];
+
+        for (var i = 0; i < fall.Count - 1; i++)
+            rise[i] = fall[fall.Count - 2 - i];
+
+        rise[^1] = 1f;
+
+        return rise;
     }
 }
