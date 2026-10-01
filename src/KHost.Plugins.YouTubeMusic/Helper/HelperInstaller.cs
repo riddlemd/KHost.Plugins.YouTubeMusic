@@ -35,6 +35,13 @@ public static class HelperInstaller
         | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
         | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
 
+    /// <summary>Finder's own marker for a custom-icon'd folder: a zero-byte file NSWorkspace's
+    /// setIcon creates, the real icon living only in its resource-fork extended attribute, which
+    /// TreeHash never reads. The shipped app never carries one, so hashing this path would make an
+    /// installed copy the helper has iconified disagree with its own build forever and reinstall
+    /// over the icon on every start.</summary>
+    private const string FinderCustomIconFile = "Icon\r";
+
     /// <param name="shippedApp">The app beside the plugin's files; may not exist.</param>
     /// <param name="isRunning">Asked only when an update is due.</param>
     public static HelperInstallResult Install(string shippedApp, string binDirectory, Func<bool> isRunning)
@@ -102,6 +109,7 @@ public static class HelperInstaller
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         var files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+            .Where(path => Path.GetFileName(path) != FinderCustomIconFile)
             .Select(path => (Path: path, Relative: Path.GetRelativePath(root, path).Replace('\\', '/')))
             .OrderBy(file => file.Relative, StringComparer.Ordinal);
 

@@ -40,7 +40,10 @@ shared.
   `com.khost.youtube-music-helper`; Swift, universal arm64 + x86_64, ad-hoc signed; source in
   `helpers/macos/`). It is music.youtube.com in a WebKit view and nothing else: **one Dock icon**
   named *YouTube Music*, no browser, no second Chrome, no consent prompt. Clicking the Dock icon
-  shows the window; closing the window hides it and the music plays on; ⌘Q quits it.
+  shows the window; closing the window hides it and the music plays on; ⌘Q quits it. Its icon is
+  never shipped: it is fetched at runtime from music.youtube.com's own web app manifest (the way a
+  browser's "install as app" does), cached under its `Caches/` folder, and written onto the
+  installed bundle with `NSWorkspace.setIcon` so Finder and the Dock show it before it has run.
 - **Installed into the host's shared `bin/`** at
   `<KHost>/bin/khost.youtube-music/YouTube Music.app` (`IHostDirectories.BinDirectory`, a folder
   distinctly this plugin's). It is copied there when the plugin loads, and only when its files
