@@ -26,6 +26,13 @@ public static class ChromeProfile
     public static bool HasBeenOpened(string profileDirectory)
         => File.Exists(Path.Combine(profileDirectory, "Local State"));
 
+    /// <summary>Whether the YouTube Music app is installed in the profile. Chrome keeps an installed
+    /// app's icons in a folder named for its id; a profile that never installed it has none, whatever
+    /// Chrome preinstalls.</summary>
+    public static bool HasYouTubeMusicApp(string profileDirectory)
+        => Directory.Exists(Path.Combine(
+            profileDirectory, "Default", "Web Applications", "Manifest Resources", ChromeArguments.YouTubeMusicAppId));
+
     /// <summary>The pid of the Chrome running on this profile, from the lock Chrome holds on it
     /// (<c>SingletonLock</c> → <c>&lt;host&gt;-&lt;pid&gt;</c>). Null when there is no lock; the
     /// caller still checks the pid is alive, since a crash leaves the link behind.</summary>

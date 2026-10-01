@@ -6,14 +6,34 @@ namespace KHost.Plugins.YouTubeMusic.Chrome;
 /// lands on an instance already running on this profile only opens a window there.</remarks>
 public static class ChromeArguments
 {
+    /// <summary>The id Chrome gives the installed YouTube Music app; the same one Edge gives it, and
+    /// the same on every machine.</summary>
+    public const string YouTubeMusicAppId = "cinhimbnkkaeohfgghhklpknlkffjgod";
+
     public const string YouTubeMusicHome = "https://music.youtube.com/";
 
-    /// <summary>A chromeless app window. Chrome on macOS has no switch that installs the web app,
-    /// and none is needed: nothing here depends on the window being an installed app.</summary>
-    public static IReadOnlyList<string> ForApp(string profileDirectory, string? startUrl)
-        => [.. Common(profileDirectory), $"--app={(IsYouTubeMusicUrl(startUrl) ? startUrl : YouTubeMusicHome)}"];
+    /// <summary>The installed app when <paramref name="appInstalled"/>, else an anonymous app window.</summary>
+    /// <remarks>Only the installed app gets a "YouTube Music" Dock icon of its own (Chrome's app
+    /// shim) that raises the window. An anonymous <c>--app=</c> window sits under a second Google
+    /// Chrome icon, and clicking that opens a new browser window instead.</remarks>
+    public static IReadOnlyList<string> ForApp(string profileDirectory, string? startUrl, bool appInstalled)
+    {
+        var url = IsYouTubeMusicUrl(startUrl) ? startUrl : null;
 
-    /// <summary>An ordinary window on the profile, where the host signs in.</summary>
+        if (!appInstalled)
+            return [.. Common(profileDirectory), $"--app={url ?? YouTubeMusicHome}"];
+
+        List<string> arguments = [.. Common(profileDirectory), $"--app-id={YouTubeMusicAppId}"];
+
+        // The switch a shortcut-menu item uses keeps the window the installed app; --app=<url> would not.
+        if (url is not null)
+            arguments.Add($"--app-launch-url-for-shortcuts-menu-item={url}");
+
+        return arguments;
+    }
+
+    /// <summary>An ordinary window on the profile, where the host signs in and installs the app.
+    /// Chrome on macOS has no switch that installs it.</summary>
     public static IReadOnlyList<string> ForSetup(string profileDirectory)
         => [.. Common(profileDirectory), YouTubeMusicHome];
 

@@ -255,10 +255,21 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         switch (key)
         {
             case SetupButton:
+                var installing = SetupStatusNow() == SetupStatus.ReadyWithoutApp;
+
                 if (!await _controller.OpenSetupAsync(cancellationToken))
                 {
                     _logger.LogWarning("YouTube Music setup could not open {Browser}", _controller.BrowserName);
                     _flash?.Show($"YouTube Music: couldn't open {_controller.BrowserName} for setup.", FlashType.Warning);
+                }
+                else if (installing)
+                {
+                    // An app installed into a running Chrome keeps its window under Chrome's own icon
+                    // until that Chrome quits; only the next launch comes up under the app's.
+                    _flash?.Show(
+                        $"YouTube Music: in {_controller.BrowserName}, click the install icon in the address bar, then Install. "
+                        + $"Quit {_controller.BrowserShortName} afterwards, and the next Play opens it under its own Dock icon.",
+                        FlashType.Warning);
                 }
                 break;
 
@@ -288,13 +299,18 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 SetupStatus.Unsupported => new PluginButtonState { Enabled = false, Label = "YouTube Music: Windows and macOS only" },
                 SetupStatus.BrowserNotFound => new PluginButtonState { Enabled = false, Label = $"{_controller.BrowserName} not found" },
                 SetupStatus.Ready => new PluginButtonState { Label = "Set up YouTube Music again" },
+
+                // Plays already; installing is what gives the window a Dock icon the host can find it by.
+                SetupStatus.ReadyWithoutApp => new PluginButtonState { Label = "Install the YouTube Music app" },
                 SetupStatus.NotPermitted => new PluginButtonState { Label = $"Allow KHost to control {_controller.BrowserName}" },
                 _ => PluginButtonState.Default,
             },
-            OpenButton => new PluginButtonState { Visible = status == SetupStatus.Ready },
+            OpenButton => new PluginButtonState { Visible = CanPlay(status) },
             _ => PluginButtonState.Default,
         };
     }
+
+    private static bool CanPlay(SetupStatus status) => status is SetupStatus.Ready or SetupStatus.ReadyWithoutApp;
 
     /// <summary>Cached briefly: the row is redrawn often, and the check reads the profile's files.</summary>
     private SetupStatus SetupStatusNow()
@@ -325,7 +341,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
         ThrowIfNotPermitted();
 
-        if (SetupStatusNow() != SetupStatus.Ready)
+        if (!CanPlay(SetupStatusNow()))
         {
             _logger.LogWarning(
                 "YouTube Music is not set up in this plugin's {Browser} profile; press \"Set up YouTube Music\" on the Plugins page",

@@ -390,6 +390,55 @@ public class YouTubeMusicBreakMusicProviderTests
         _context.Received(1).ReportWarning(Arg.Is<string>(m => m.Contains("Set up YouTube Music")));
     }
 
+    // macOS before the app is installed: it plays, so nothing may stop the show over a Dock icon.
+    [Fact]
+    public async Task StartAsync_ReadyWithoutApp_LaunchesAndPlays()
+    {
+        _controller.Snapshot = SessionSnapshot.None;
+        _controller.Status = SetupStatus.ReadyWithoutApp;
+        _controller.OnCommand = command => command.StartsWith("launch:", StringComparison.Ordinal) ? Playing : null;
+
+        Assert.True(await Build().StartAsync());
+        Assert.Equal("launch:", _controller.Calls[0]);
+    }
+
+    [Fact]
+    public void DescribeButton_ReadyWithoutApp_OffersTheInstallAndShowsOpen()
+    {
+        _controller.Status = SetupStatus.ReadyWithoutApp;
+
+        var provider = Build();
+
+        Assert.Equal("Install the YouTube Music app", provider.DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton).Label);
+        Assert.True(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
+        _context.DidNotReceive().ReportWarning(Arg.Any<string>());
+    }
+
+    // The install is a click in Chrome's address bar; the Plugins page is the only place to say so.
+    [Fact]
+    public async Task InvokeButtonAsync_SetupWithoutApp_SaysWhereToInstall()
+    {
+        _controller.BrowserName = "Google Chrome";
+        _controller.BrowserShortName = "Chrome";
+        _controller.Status = SetupStatus.ReadyWithoutApp;
+
+        await Build().InvokeButtonAsync(YouTubeMusicBreakMusicProvider.SetupButton);
+
+        Assert.Equal(["setup"], _controller.Calls);
+        _flash.Received(1).Show(
+            Arg.Is<string>(m => m.Contains("install icon in the address bar") && m.Contains("Quit Chrome")),
+            FlashType.Warning);
+    }
+
+    [Fact]
+    public async Task InvokeButtonAsync_SetupWhenReady_SaysNothing()
+    {
+        await Build().InvokeButtonAsync(YouTubeMusicBreakMusicProvider.SetupButton);
+
+        Assert.Equal(["setup"], _controller.Calls);
+        _flash.DidNotReceive().Show(Arg.Any<string>(), Arg.Any<FlashType>());
+    }
+
     [Fact]
     public void DescribeButton_Ready_ShowsOpen()
         => Assert.True(Build().DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);

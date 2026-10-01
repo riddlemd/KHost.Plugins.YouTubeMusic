@@ -8,9 +8,12 @@ namespace KHost.Plugins.YouTubeMusic.Mac;
 
 /// <summary>YouTube Music in a Chrome app window on the plugin's own profile, driven by scripts sent
 /// to that one Chrome process as Apple Events.</summary>
-/// <remarks>Chrome raises nothing a plugin can hear, so the page is polled; the reads land in the
+/// <remarks>Once the host has installed the app, its window is drawn by Chrome's app shim under a
+/// "YouTube Music" Dock icon, but it is still the browser process that answers the scripts, so the
+/// pid from <c>SingletonLock</c> stays the one to address.
+/// <para>Chrome raises nothing a plugin can hear, so the page is polled; the reads land in the
 /// same <see cref="SessionSnapshot"/> the Windows media session gives, and
-/// <see cref="SessionTracker"/> decides what they mean on both.</remarks>
+/// <see cref="SessionTracker"/> decides what they mean on both.</para></remarks>
 [SupportedOSPlatform("macos")]
 internal sealed class MacYouTubeMusicController : IYouTubeMusicController
 {
@@ -78,9 +81,9 @@ internal sealed class MacYouTubeMusicController : IYouTubeMusicController
         // permission can only be read against a running target.
         var permission = RunningPid() is { } pid ? CheckPermission(pid) : _permission;
 
-        return permission is AppleEvents.NotPermittedError or AppleEvents.WouldRequireConsentError
-            ? SetupStatus.NotPermitted
-            : SetupStatus.Ready;
+        return MacSetup.StatusFor(
+            notPermitted: permission is AppleEvents.NotPermittedError or AppleEvents.WouldRequireConsentError,
+            appInstalled: ChromeProfile.HasYouTubeMusicApp(_profileDirectory));
     }
 
     public Task StartWatchingAsync(CancellationToken cancellationToken = default)
@@ -112,7 +115,7 @@ internal sealed class MacYouTubeMusicController : IYouTubeMusicController
 
         var url = ChromeArguments.IsYouTubeMusicUrl(startUrl) ? startUrl : null;
 
-        // A second --app window would be a second player; the one already open is pointed at the
+        // A second app window would be a second player; the one already open is pointed at the
         // list instead, or left alone when there is none to start.
         if (IsBrowserRunning)
         {
@@ -124,7 +127,9 @@ internal sealed class MacYouTubeMusicController : IYouTubeMusicController
                 return url is null || reading.Ok;
         }
 
-        return await LaunchAsync(ChromeArguments.ForApp(_profileDirectory, url), background: true, cancellationToken);
+        var arguments = ChromeArguments.ForApp(_profileDirectory, url, ChromeProfile.HasYouTubeMusicApp(_profileDirectory));
+
+        return await LaunchAsync(arguments, background: true, cancellationToken);
     }
 
     public async Task<bool> OpenSetupAsync(CancellationToken cancellationToken = default)
