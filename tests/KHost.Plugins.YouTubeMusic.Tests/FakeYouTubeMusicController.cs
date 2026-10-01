@@ -10,6 +10,15 @@ public sealed class FakeYouTubeMusicController : IYouTubeMusicController
 
     public string? Unavailable { get; set; }
 
+    /// <summary>Edge's names by default, so every message asserted below is the Windows wording.</summary>
+    public string BrowserName { get; set; } = "Microsoft Edge";
+
+    public string BrowserShortName { get; set; } = "Edge";
+
+    public string NotSetUpWarning { get; set; } =
+        "YouTube Music is not installed in this plugin's Edge profile yet. Press \"Set up "
+        + "YouTube Music\", sign in, then install it from the \"App available\" icon in Edge's address bar.";
+
     public event EventHandler? SessionChanged;
 
     public void RaiseSessionChanged() => SessionChanged?.Invoke(this, EventArgs.Empty);

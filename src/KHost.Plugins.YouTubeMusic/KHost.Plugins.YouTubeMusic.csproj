@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- The Windows target is the only one that can drive anything: it carries the WinRT projection
-         for Windows.Media.Control. The plain target builds and loads everywhere and reports itself
-         unavailable, so one catalog entry with a blank Rid can still name its limitation. -->
+    <!-- The Windows target carries the WinRT projection for Windows.Media.Control and is the only
+         one that drives Windows. The plain target drives Chrome on macOS through Apple Events, and
+         elsewhere loads and reports itself unavailable. -->
     <TargetFrameworks>net10.0;net10.0-windows10.0.19041.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -46,6 +46,8 @@
 
   <ItemGroup>
     <Content Include="manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The script the macOS controller sends to the page; one file so it can be read whole. -->
+    <EmbeddedResource Include="Mac\youtube-music-page.js" LogicalName="KHost.Plugins.YouTubeMusic.Mac.youtube-music-page.js" />
   </ItemGroup>
 
   <!-- Dev convenience: drop the built plugin into a sibling KHost checkout's runtime plugins

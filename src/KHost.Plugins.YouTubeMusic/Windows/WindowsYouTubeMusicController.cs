@@ -51,6 +51,14 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
 
     public string? Unavailable { get; }
 
+    public string BrowserName => "Microsoft Edge";
+
+    public string BrowserShortName => "Edge";
+
+    public string NotSetUpWarning =>
+        "YouTube Music is not installed in this plugin's Edge profile yet. Press \"Set up "
+        + "YouTube Music\", sign in, then install it from the \"App available\" icon in Edge's address bar.";
+
     public bool IsBrowserRunning
         => ProcessCommandLine.Find("msedge", line => EdgeCommandLine.IsBrowserFor(line, _profileDirectory)).Count > 0;
 

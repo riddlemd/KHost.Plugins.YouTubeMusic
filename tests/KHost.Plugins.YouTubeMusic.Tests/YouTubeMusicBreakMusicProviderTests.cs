@@ -395,6 +395,118 @@ public class YouTubeMusicBreakMusicProviderTests
         => Assert.True(Build().DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
 
     [Fact]
+    public void DescribeButton_Unsupported_SaysWhereItRuns()
+    {
+        _controller.Unavailable = "Linux";
+        _controller.Status = SetupStatus.Unsupported;
+
+        Assert.Equal("YouTube Music: Windows and macOS only", Build().DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton).Label);
+    }
+
+    [Fact]
+    public void DescribeButton_NotPermitted_OffersToAskAgainAndHidesOpen()
+    {
+        _controller.BrowserName = "Google Chrome";
+        _controller.Status = SetupStatus.NotPermitted;
+
+        var provider = Build();
+        var setup = provider.DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton);
+
+        Assert.True(setup.Enabled);
+        Assert.Equal("Allow KHost to control Google Chrome", setup.Label);
+        Assert.False(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
+    }
+
+    [Fact]
+    public void DescribeButton_BrowserMissing_NamesThatBrowser()
+    {
+        _controller.BrowserName = "Google Chrome";
+        _controller.Status = SetupStatus.BrowserNotFound;
+
+        Assert.Equal("Google Chrome not found", Build().DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton).Label);
+    }
+
+    [Fact]
+    public void Constructor_NotSetUp_WarnsWithTheBackendsOwnInstructions()
+    {
+        _controller.Status = SetupStatus.AppNotInstalled;
+        _controller.NotSetUpWarning = "Press setup; Chrome opens.";
+
+        Build();
+
+        _context.Received(1).ReportWarning("Press setup; Chrome opens.");
+    }
+
+    [Fact]
+    public async Task StartAsync_NotPermittedAndSessionUnreadable_ThrowsNotPermittedWithoutLaunching()
+    {
+        _controller.BrowserName = "Google Chrome";
+        _controller.Status = SetupStatus.NotPermitted;
+        _controller.Snapshot = null;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        Assert.Equal("KH-YTMUSIC-NOT-PERMITTED", ex.ReferenceCode);
+        Assert.Equal("YouTube Music: KHost isn't allowed to control Google Chrome.", ex.WhatHappened);
+        Assert.Empty(_controller.Calls);
+    }
+
+    [Fact]
+    public async Task StartAsync_NotPermittedWithNothingOpen_ThrowsNotPermittedWithoutLaunching()
+    {
+        _controller.Status = SetupStatus.NotPermitted;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        Assert.Equal("KH-YTMUSIC-NOT-PERMITTED", ex.ReferenceCode);
+        Assert.Empty(_controller.Calls);
+    }
+
+    // Permission can only be read once Chrome is up, so a refusal surfaces after the launch.
+    [Fact]
+    public async Task StartAsync_RefusalSeenOnlyAfterLaunch_ThrowsNotPermittedRatherThanATimeout()
+    {
+        _controller.OnCommand = command =>
+        {
+            if (command.StartsWith("launch", StringComparison.Ordinal))
+                _controller.Status = SetupStatus.NotPermitted;
+
+            return null;
+        };
+        _controller.Snapshot = SessionSnapshot.None;
+        var provider = Build(new YouTubeMusicSettings { PlaylistUrl = Playlist });
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => provider.StartAsync());
+
+        Assert.Equal("KH-YTMUSIC-NOT-PERMITTED", ex.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task StartAsync_BrowserMissing_NamesThatBrowser()
+    {
+        _controller.BrowserName = "Google Chrome";
+        _controller.Unavailable = "Google Chrome was not found";
+        _controller.Status = SetupStatus.BrowserNotFound;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        Assert.Equal("YouTube Music: couldn't start break music — Google Chrome isn't installed on this machine.", ex.WhatHappened);
+    }
+
+    [Fact]
+    public async Task StartAsync_NotSetUp_NamesTheBrowsersProfile()
+    {
+        _controller.BrowserShortName = "Chrome";
+        _controller.Status = SetupStatus.AppNotInstalled;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        Assert.Equal(
+            "YouTube Music: not set up in this plugin's Chrome profile. Press \"Set up YouTube Music\" on the Plugins page.",
+            ex.WhatHappened);
+    }
+
+    [Fact]
     public void DescribeButton_EdgeMissing_DisablesSetup()
     {
         _controller.Status = SetupStatus.BrowserNotFound;
@@ -461,7 +573,7 @@ public class YouTubeMusicBreakMusicProviderTests
 
         var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
 
-        Assert.Equal("YouTube Music: break music only runs on Windows.", ex.WhatHappened);
+        Assert.Equal("YouTube Music: break music only runs on Windows and macOS.", ex.WhatHappened);
         Assert.Equal("KH-YTMUSIC-UNSUPPORTED", ex.ReferenceCode);
     }
 
@@ -630,15 +742,34 @@ public class YouTubeMusicBreakMusicProviderTests
 
 public class YouTubeMusicControllerFactoryTests
 {
+    // Constructing it only looks for Chrome; nothing is launched or scripted.
     [Fact]
-    public void ForCurrentPlatform_NotWindows_IsUnavailableWithAReason()
+    public void ForCurrentPlatform_MacOS_IsTheChromeController()
     {
-        if (OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        var controller = YouTubeMusicControllerFactory.ForCurrentPlatform(NullLogger.Instance, "/tmp/khost-ytm-factory-test");
+
+        Assert.IsType<KHost.Plugins.YouTubeMusic.Mac.MacYouTubeMusicController>(controller);
+        Assert.Equal("Google Chrome", controller.BrowserName);
+    }
+
+    [Fact]
+    public void ForCurrentPlatform_NeitherWindowsNorMacOS_IsUnavailableWithAReason()
+    {
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
             return;
 
         var controller = YouTubeMusicControllerFactory.ForCurrentPlatform(NullLogger.Instance, "/tmp/profile");
 
-        Assert.Contains("Windows only", controller.Unavailable);
+        Assert.Contains("Windows and macOS only", controller.Unavailable);
         Assert.Equal(SetupStatus.Unsupported, controller.GetSetupStatus());
     }
+
+    [Fact]
+    public void UnsupportedReason_NamesBothBackendsAndThePlatform()
+        => Assert.Equal(
+            "YouTube Music break music runs on Windows and macOS only for now; there is no backend for Ubuntu 24.04.",
+            YouTubeMusicControllerFactory.UnsupportedReason("Ubuntu 24.04"));
 }
