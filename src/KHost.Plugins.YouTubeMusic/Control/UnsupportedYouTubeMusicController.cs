@@ -6,6 +6,12 @@ public sealed class UnsupportedYouTubeMusicController(string reason) : IYouTubeM
 {
     public string? Unavailable { get; } = reason;
 
+    public string BrowserName => "a browser";
+
+    public string BrowserShortName => "browser";
+
+    public string NotSetUpWarning => Unavailable!;
+
     public event EventHandler? SessionChanged { add { } remove { } }
 
     public bool IsBrowserRunning => false;

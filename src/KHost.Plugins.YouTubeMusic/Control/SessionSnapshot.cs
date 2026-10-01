@@ -16,13 +16,16 @@ public enum SessionPlayback
 /// <summary>One read of the app's media session, as the OS reports it.</summary>
 /// <param name="Position">Where the track was at <paramref name="LastUpdated"/>, not now.</param>
 /// <param name="Duration">Zero when the session did not say.</param>
+/// <param name="IsAdvert">The backend could see an advert was on, whatever it was titled. Windows'
+/// media session cannot say, so there only <see cref="SessionRules.IsAdvert"/> decides.</param>
 public sealed record SessionSnapshot(
     SessionPlayback Playback,
     string? Title = null,
     string? Artist = null,
     TimeSpan Position = default,
     DateTimeOffset LastUpdated = default,
-    TimeSpan Duration = default)
+    TimeSpan Duration = default,
+    bool IsAdvert = false)
 {
     public static readonly SessionSnapshot None = new(SessionPlayback.None);
 

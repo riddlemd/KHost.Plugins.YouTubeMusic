@@ -114,6 +114,7 @@ public sealed class SessionTracker
     {
         if (snapshot.Playback is not (SessionPlayback.Playing or SessionPlayback.Paused)
             || string.IsNullOrWhiteSpace(snapshot.Title)
+            || snapshot.IsAdvert
             || SessionRules.IsAdvert(snapshot.Title, snapshot.Artist))
             return null;
 

@@ -5,13 +5,13 @@ using KHost.Abstractions.Models;
 using KHost.Abstractions.Services;
 using KHost.Plugins.YouTubeMusic.Audio;
 using KHost.Plugins.YouTubeMusic.Control;
-using KHost.Plugins.YouTubeMusic.Edge;
 using Microsoft.Extensions.Logging;
 
 namespace KHost.Plugins.YouTubeMusic;
 
-/// <summary>Break music out of the YouTube Music app installed in Edge on this machine. The host
-/// carries none of this audio, so nothing here reaches a screen or a Cast device.</summary>
+/// <summary>Break music out of YouTube Music in a browser on this machine: the app installed in Edge
+/// on Windows, a Chrome app window on macOS. The host carries none of this audio, so nothing here
+/// reaches a screen or a Cast device.</summary>
 public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPluginButtonHandler
 {
     internal const string SetupButton = "setup";
@@ -83,8 +83,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         _fade = TimeSpan.FromMilliseconds(Math.Max(0, settings.FadeMilliseconds));
         _recoverUnexpectedPause = settings.RecoverUnexpectedPause;
 
-        _controller = controller ?? YouTubeMusicControllerFactory.ForCurrentPlatform(
-            logger, EdgeProfile.Resolve(settings.ProfileDirectory));
+        _controller = controller ?? YouTubeMusicControllerFactory.ForCurrentPlatform(logger, settings.ProfileDirectory);
 
         if (!string.IsNullOrWhiteSpace(settings.PlaylistUrl) && _startUrl is null)
         {
@@ -100,11 +99,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
 
         if (SetupStatusNow() == SetupStatus.AppNotInstalled)
-        {
-            context.ReportWarning(
-                "YouTube Music is not installed in this plugin's Edge profile yet. Press \"Set up "
-                + "YouTube Music\", sign in, then install it from the \"App available\" icon in Edge's address bar.");
-        }
+            context.ReportWarning(_controller.NotSetUpWarning);
 
         _controller.SessionChanged += (_, _) => _ = RefreshAsync();
 
@@ -138,14 +133,14 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
             if (SetupStatusNow() == SetupStatus.Unsupported)
             {
                 throw new KHostException(
-                    "YouTube Music: break music only runs on Windows.",
+                    "YouTube Music: break music only runs on Windows and macOS.",
                     suggestion: "",
                     "KH-YTMUSIC-UNSUPPORTED");
             }
 
             throw new KHostException(
-                "YouTube Music: couldn't start break music — Microsoft Edge isn't installed on this machine.",
-                "Install Microsoft Edge, then try again.",
+                $"YouTube Music: couldn't start break music — {_controller.BrowserName} isn't installed on this machine.",
+                $"Install {_controller.BrowserName}, then try again.",
                 "KH-YTMUSIC-NO-BROWSER");
         }
 
@@ -156,6 +151,8 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
         if (before is null)
         {
+            ThrowIfNotPermitted();
+
             // Opening the app again on every try would stack windows without ever seeing one.
             _logger.LogWarning("Cannot see YouTube Music's media session, so break music was not started");
             throw new KHostException(
@@ -260,8 +257,8 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
             case SetupButton:
                 if (!await _controller.OpenSetupAsync(cancellationToken))
                 {
-                    _logger.LogWarning("YouTube Music setup could not open Microsoft Edge");
-                    _flash?.Show("YouTube Music: couldn't open Microsoft Edge for setup.", FlashType.Warning);
+                    _logger.LogWarning("YouTube Music setup could not open {Browser}", _controller.BrowserName);
+                    _flash?.Show($"YouTube Music: couldn't open {_controller.BrowserName} for setup.", FlashType.Warning);
                 }
                 break;
 
@@ -269,7 +266,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 if (!await _controller.LaunchAppAsync(startUrl: null, cancellationToken))
                 {
                     _logger.LogWarning("YouTube Music could not be launched from the Plugins page");
-                    _flash?.Show("YouTube Music: couldn't open Microsoft Edge to launch the app.", FlashType.Warning);
+                    _flash?.Show($"YouTube Music: couldn't open {_controller.BrowserName} to launch the app.", FlashType.Warning);
                 }
                 break;
 
@@ -288,9 +285,10 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         {
             SetupButton => status switch
             {
-                SetupStatus.Unsupported => new PluginButtonState { Enabled = false, Label = "YouTube Music: Windows only" },
-                SetupStatus.BrowserNotFound => new PluginButtonState { Enabled = false, Label = "Microsoft Edge not found" },
+                SetupStatus.Unsupported => new PluginButtonState { Enabled = false, Label = "YouTube Music: Windows and macOS only" },
+                SetupStatus.BrowserNotFound => new PluginButtonState { Enabled = false, Label = $"{_controller.BrowserName} not found" },
                 SetupStatus.Ready => new PluginButtonState { Label = "Set up YouTube Music again" },
+                SetupStatus.NotPermitted => new PluginButtonState { Label = $"Allow KHost to control {_controller.BrowserName}" },
                 _ => PluginButtonState.Default,
             },
             OpenButton => new PluginButtonState { Visible = status == SetupStatus.Ready },
@@ -325,11 +323,15 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 "KH-YTMUSIC-NOT-RUNNING");
         }
 
+        ThrowIfNotPermitted();
+
         if (SetupStatusNow() != SetupStatus.Ready)
         {
-            _logger.LogWarning("YouTube Music is not set up in this plugin's Edge profile; press \"Set up YouTube Music\" on the Plugins page");
+            _logger.LogWarning(
+                "YouTube Music is not set up in this plugin's {Browser} profile; press \"Set up YouTube Music\" on the Plugins page",
+                _controller.BrowserShortName);
             throw new KHostException(
-                "YouTube Music: not set up in this plugin's Edge profile. Press \"Set up YouTube Music\" on the Plugins page.",
+                $"YouTube Music: not set up in this plugin's {_controller.BrowserShortName} profile. Press \"Set up YouTube Music\" on the Plugins page.",
                 "Press \"Set up YouTube Music\" on the Plugins page, then try again.",
                 "KH-YTMUSIC-NOT-SET-UP");
         }
@@ -338,7 +340,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         {
             _logger.LogWarning("YouTube Music could not be launched");
             throw new KHostException(
-                "YouTube Music: couldn't open Microsoft Edge to start break music.",
+                $"YouTube Music: couldn't open {_controller.BrowserName} to start break music.",
                 "Try again.",
                 "KH-YTMUSIC-LAUNCH-FAILED");
         }
@@ -361,6 +363,10 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
         if (session is not { Playback: not SessionPlayback.None })
         {
+            // A consent missing on macOS shows up only once the browser is up to be asked about.
+            _setupStatus = null;
+            ThrowIfNotPermitted();
+
             _logger.LogWarning(
                 _startUrl is null
                     ? "YouTube Music opened but nothing started. Set a playlist in this plugin's settings, or start one in the app"
@@ -391,6 +397,21 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
 
         return await PlayAndLevelAsync(cancellationToken);
+    }
+
+    /// <summary>macOS only: without the host's consent every script to Chrome is refused, which
+    /// would otherwise read as "couldn't check what's playing" or a launch that never sounds.</summary>
+    private void ThrowIfNotPermitted()
+    {
+        if (SetupStatusNow() != SetupStatus.NotPermitted)
+            return;
+
+        _logger.LogWarning("KHost is not allowed to control {Browser}, so break music was not started", _controller.BrowserName);
+        throw new KHostException(
+            $"YouTube Music: KHost isn't allowed to control {_controller.BrowserName}.",
+            $"Press \"Allow KHost to control {_controller.BrowserName}\" on the Plugins page, or turn it on in System "
+            + "Settings → Privacy & Security → Automation, then try again.",
+            "KH-YTMUSIC-NOT-PERMITTED");
     }
 
     private async Task<bool> PlayAndLevelAsync(CancellationToken cancellationToken)

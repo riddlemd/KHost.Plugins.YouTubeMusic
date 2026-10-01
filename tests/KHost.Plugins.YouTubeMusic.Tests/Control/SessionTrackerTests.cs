@@ -99,6 +99,21 @@ public class SessionTrackerTests
         Assert.Null(_tracker.Track);
     }
 
+    // On macOS the page itself says an advert is on, and the advert carries a real-looking title.
+    [Fact]
+    public void Observe_AdvertTheBackendMarked_ReportsPlayingWithNoTrackWhateverItIsTitled()
+    {
+        _tracker.Observe(SongA, Start);
+
+        var observation = _tracker.Observe(
+            new SessionSnapshot(SessionPlayback.Playing, "Ebenezer | Official Trailer 2", "Paramount Pictures", IsAdvert: true),
+            Start.AddSeconds(1));
+
+        Assert.True(observation.Changed);
+        Assert.Equal(BreakMusicPlayback.Playing, observation.Playback);
+        Assert.Null(_tracker.Track);
+    }
+
     [Fact]
     public void Observe_PausedWithNoRequest_IsUnexpected()
     {
