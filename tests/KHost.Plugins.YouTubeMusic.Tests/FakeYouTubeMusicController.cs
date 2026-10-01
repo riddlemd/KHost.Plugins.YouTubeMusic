@@ -28,6 +28,10 @@ public sealed class FakeYouTubeMusicController : IYouTubeMusicController
 
     public bool CanSetLevel { get; set; } = true;
 
+    /// <summary>False makes every command (play, pause, skip, launch, setup) report failure, the
+    /// way a real backend does when it cannot reach the app.</summary>
+    public bool CommandsSucceed { get; set; } = true;
+
     public Task StartWatchingAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
     public Task<SessionSnapshot?> ReadAsync(CancellationToken cancellationToken = default)
@@ -56,7 +60,7 @@ public sealed class FakeYouTubeMusicController : IYouTubeMusicController
         if (OnCommand?.Invoke(name) is { } next)
             Snapshot = next;
 
-        return Task.FromResult(true);
+        return Task.FromResult(CommandsSucceed);
     }
 }
 

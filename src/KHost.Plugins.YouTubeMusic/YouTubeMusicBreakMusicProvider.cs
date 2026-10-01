@@ -1,3 +1,4 @@
+using KHost.Abstractions.Exceptions;
 using KHost.Abstractions.Messaging;
 using KHost.Abstractions.Messaging.Messages;
 using KHost.Abstractions.Models;
@@ -40,6 +41,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     private readonly ILogger<YouTubeMusicBreakMusicProvider> _logger;
     private readonly IMessageBroker? _broker;
+    private readonly IFlashService? _flash;
     private readonly IYouTubeMusicController _controller;
     private readonly SessionTracker _tracker = new();
     private readonly TimeProvider _time;
@@ -53,8 +55,9 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     private (SetupStatus Status, DateTimeOffset ReadAt)? _setupStatus;
 
     public YouTubeMusicBreakMusicProvider(
-        ILogger<YouTubeMusicBreakMusicProvider> logger, IPluginContext context, IMessageBroker broker)
-        : this(logger, context, controller: null, broker)
+        ILogger<YouTubeMusicBreakMusicProvider> logger, IPluginContext context, IMessageBroker broker,
+        IFlashService flashService)
+        : this(logger, context, controller: null, broker, flashService)
     {
     }
 
@@ -63,11 +66,13 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         IPluginContext context,
         IYouTubeMusicController? controller,
         IMessageBroker? broker = null,
+        IFlashService? flashService = null,
         TimeProvider? time = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
         _logger = logger;
         _broker = broker;
+        _flash = flashService;
         _time = time ?? TimeProvider.System;
         _delay = delay ?? ((span, token) => Task.Delay(span, _time, token));
 
@@ -129,7 +134,19 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         if (_controller.Unavailable is { } reason)
         {
             _logger.LogInformation("YouTube Music break music cannot start: {Reason}", reason);
-            return false;
+
+            if (SetupStatusNow() == SetupStatus.Unsupported)
+            {
+                throw new KHostException(
+                    "YouTube Music: break music only runs on Windows.",
+                    suggestion: "",
+                    "KH-YTMUSIC-UNSUPPORTED");
+            }
+
+            throw new KHostException(
+                "YouTube Music: couldn't start break music — Microsoft Edge isn't installed on this machine.",
+                "Install Microsoft Edge, then try again.",
+                "KH-YTMUSIC-NO-BROWSER");
         }
 
         var before = await _controller.ReadAsync(cancellationToken);
@@ -141,7 +158,10 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         {
             // Opening the app again on every try would stack windows without ever seeing one.
             _logger.LogWarning("Cannot see YouTube Music's media session, so break music was not started");
-            return false;
+            throw new KHostException(
+                "YouTube Music: couldn't check what's playing, so break music wasn't started.",
+                "Try again.",
+                "KH-YTMUSIC-READ-FAILED");
         }
 
         if (before.Playback == SessionPlayback.Playing)
@@ -238,11 +258,19 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         switch (key)
         {
             case SetupButton:
-                await _controller.OpenSetupAsync(cancellationToken);
+                if (!await _controller.OpenSetupAsync(cancellationToken))
+                {
+                    _logger.LogWarning("YouTube Music setup could not open Microsoft Edge");
+                    _flash?.Show("YouTube Music: couldn't open Microsoft Edge for setup.", FlashType.Warning);
+                }
                 break;
 
             case OpenButton:
-                await _controller.LaunchAppAsync(startUrl: null, cancellationToken);
+                if (!await _controller.LaunchAppAsync(startUrl: null, cancellationToken))
+                {
+                    _logger.LogWarning("YouTube Music could not be launched from the Plugins page");
+                    _flash?.Show("YouTube Music: couldn't open Microsoft Edge to launch the app.", FlashType.Warning);
+                }
                 break;
 
             default:
@@ -289,17 +317,31 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         if (!_launchIfNotRunning && !_controller.IsBrowserRunning)
         {
             _logger.LogInformation("YouTube Music is not running and this plugin is set not to open it");
-            return false;
+            throw new KHostException(
+                "YouTube Music: isn't open, and this plugin is set not to launch it. Turn on \"Launch if not "
+                + "running\" in settings, or open YouTube Music yourself.",
+                "Turn on \"Launch if not running\" in this plugin's settings, or open YouTube Music yourself, "
+                + "then try again.",
+                "KH-YTMUSIC-NOT-RUNNING");
         }
 
         if (SetupStatusNow() != SetupStatus.Ready)
         {
             _logger.LogWarning("YouTube Music is not set up in this plugin's Edge profile; press \"Set up YouTube Music\" on the Plugins page");
-            return false;
+            throw new KHostException(
+                "YouTube Music: not set up in this plugin's Edge profile. Press \"Set up YouTube Music\" on the Plugins page.",
+                "Press \"Set up YouTube Music\" on the Plugins page, then try again.",
+                "KH-YTMUSIC-NOT-SET-UP");
         }
 
         if (!await _controller.LaunchAppAsync(_startUrl, cancellationToken))
-            return false;
+        {
+            _logger.LogWarning("YouTube Music could not be launched");
+            throw new KHostException(
+                "YouTube Music: couldn't open Microsoft Edge to start break music.",
+                "Try again.",
+                "KH-YTMUSIC-LAUNCH-FAILED");
+        }
 
         var waited = TimeSpan.Zero;
         SessionSnapshot? session = null;
@@ -324,7 +366,21 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                     ? "YouTube Music opened but nothing started. Set a playlist in this plugin's settings, or start one in the app"
                     : "YouTube Music opened the playlist but nothing started playing within {Wait}",
                 SessionWait);
-            return false;
+
+            if (_startUrl is null)
+            {
+                throw new KHostException(
+                    "YouTube Music: opened, but nothing started playing. Set a playlist in this plugin's "
+                    + "settings, or start one in the app.",
+                    "Set a playlist in this plugin's settings, or start one in the app, then try again.",
+                    "KH-YTMUSIC-SESSION-TIMEOUT");
+            }
+
+            throw new KHostException(
+                "YouTube Music: opened the playlist, but nothing started playing. Check the playlist link in "
+                + "this plugin's settings.",
+                "Check the playlist link in this plugin's settings, then try again.",
+                "KH-YTMUSIC-SESSION-TIMEOUT");
         }
 
         if (session.Playback == SessionPlayback.Playing)
@@ -342,7 +398,10 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         if (!await _controller.PlayAsync(cancellationToken))
         {
             _logger.LogWarning("YouTube Music refused to play");
-            return false;
+            throw new KHostException(
+                "YouTube Music: refused to play.",
+                "Try again.",
+                "KH-YTMUSIC-PLAY-REFUSED");
         }
 
         await ApplyLevelAsync(cancellationToken);

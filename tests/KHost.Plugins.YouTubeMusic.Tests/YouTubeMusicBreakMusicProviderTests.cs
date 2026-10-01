@@ -1,3 +1,4 @@
+using KHost.Abstractions.Exceptions;
 using KHost.Abstractions.Messaging;
 using KHost.Abstractions.Messaging.Messages;
 using KHost.Abstractions.Models;
@@ -17,6 +18,7 @@ public class YouTubeMusicBreakMusicProviderTests
     private readonly FakeYouTubeMusicController _controller = new();
     private readonly IPluginContext _context = Substitute.For<IPluginContext>();
     private readonly IMessageBroker _broker = Substitute.For<IMessageBroker>();
+    private readonly IFlashService _flash = Substitute.For<IFlashService>();
     private readonly ManualClock _clock = new();
 
     /// <summary>Called with each delay the provider takes, after the clock has moved past it.</summary>
@@ -27,7 +29,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _context.BindSettings<YouTubeMusicSettings>().Returns(settings ?? new YouTubeMusicSettings());
 
         return new YouTubeMusicBreakMusicProvider(
-            NullLogger<YouTubeMusicBreakMusicProvider>.Instance, _context, _controller, _broker, _clock,
+            NullLogger<YouTubeMusicBreakMusicProvider>.Instance, _context, _controller, _broker, _flash, _clock,
             (span, token) =>
             {
                 _clock.Advance(span);
@@ -87,7 +89,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = SessionSnapshot.None;
         var started = _clock.Now;
 
-        Assert.False(await Build().StartAsync());
+        await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
         Assert.Equal(["launch:"], _controller.Calls);
         Assert.Equal(YouTubeMusicBreakMusicProvider.SessionWait, _clock.Now - started);
     }
@@ -97,7 +99,8 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = SessionSnapshot.None;
 
-        Assert.False(await Build(new YouTubeMusicSettings { LaunchIfNotRunning = false }).StartAsync());
+        await Assert.ThrowsAsync<KHostException>(
+            () => Build(new YouTubeMusicSettings { LaunchIfNotRunning = false }).StartAsync());
         Assert.Empty(_controller.Calls);
     }
 
@@ -118,7 +121,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = SessionSnapshot.None;
         _controller.Status = SetupStatus.AppNotInstalled;
 
-        Assert.False(await Build().StartAsync());
+        await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
         Assert.Empty(_controller.Calls);
     }
 
@@ -128,7 +131,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = null;
 
-        Assert.False(await Build().StartAsync());
+        await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
         Assert.Empty(_controller.Calls);
     }
 
@@ -140,7 +143,7 @@ public class YouTubeMusicBreakMusicProviderTests
         var provider = Build();
 
         _context.Received(1).ReportWarning("Windows only");
-        Assert.False(await provider.StartAsync());
+        await Assert.ThrowsAsync<KHostException>(() => provider.StartAsync());
         Assert.Equal(BreakMusicPlayback.Stopped, await provider.ReadPlaybackAsync());
         Assert.Empty(_controller.Calls);
     }
@@ -420,6 +423,208 @@ public class YouTubeMusicBreakMusicProviderTests
         await Build().InvokeButtonAsync("nope");
 
         Assert.Empty(_controller.Calls);
+    }
+
+    [Fact]
+    public async Task InvokeButtonAsync_SetupFails_Flashes()
+    {
+        _controller.CommandsSucceed = false;
+
+        await Build().InvokeButtonAsync(YouTubeMusicBreakMusicProvider.SetupButton);
+
+        _flash.Received(1).Show("YouTube Music: couldn't open Microsoft Edge for setup.", FlashType.Warning);
+    }
+
+    [Fact]
+    public async Task InvokeButtonAsync_OpenFails_Flashes()
+    {
+        _controller.CommandsSucceed = false;
+
+        await Build().InvokeButtonAsync(YouTubeMusicBreakMusicProvider.OpenButton);
+
+        _flash.Received(1).Show("YouTube Music: couldn't open Microsoft Edge to launch the app.", FlashType.Warning);
+    }
+
+    [Fact]
+    public async Task InvokeButtonAsync_Succeeds_DoesNotFlash()
+    {
+        await Build().InvokeButtonAsync(YouTubeMusicBreakMusicProvider.OpenButton);
+
+        _flash.DidNotReceive().Show(Arg.Any<string>(), Arg.Any<FlashType>());
+    }
+
+    [Fact]
+    public async Task StartAsync_Unsupported_ThrowsKHostException()
+    {
+        _controller.Unavailable = "Windows only";
+        _controller.Status = SetupStatus.Unsupported;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        Assert.Equal("YouTube Music: break music only runs on Windows.", ex.WhatHappened);
+        Assert.Equal("KH-YTMUSIC-UNSUPPORTED", ex.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task StartAsync_EdgeNotFound_ThrowsKHostException()
+    {
+        _controller.Unavailable = "Microsoft Edge was not found on this machine, and YouTube Music break music plays through it.";
+        _controller.Status = SetupStatus.BrowserNotFound;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        Assert.Equal(
+            "YouTube Music: couldn't start break music — Microsoft Edge isn't installed on this machine.",
+            ex.WhatHappened);
+        Assert.Equal("KH-YTMUSIC-NO-BROWSER", ex.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task StartAsync_CannotSeeTheSession_ThrowsKHostException()
+    {
+        _controller.Snapshot = null;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        Assert.Equal(
+            "YouTube Music: couldn't check what's playing, so break music wasn't started.",
+            ex.WhatHappened);
+        Assert.Equal("KH-YTMUSIC-READ-FAILED", ex.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task StartAsync_NotRunningAndNotAllowedToLaunch_ThrowsKHostException()
+    {
+        _controller.Snapshot = SessionSnapshot.None;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(
+            () => Build(new YouTubeMusicSettings { LaunchIfNotRunning = false }).StartAsync());
+
+        Assert.Contains("set not to launch", ex.WhatHappened);
+        Assert.Equal("KH-YTMUSIC-NOT-RUNNING", ex.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task StartAsync_AppNotInstalled_ThrowsKHostException()
+    {
+        _controller.Snapshot = SessionSnapshot.None;
+        _controller.Status = SetupStatus.AppNotInstalled;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        Assert.Contains("not set up", ex.WhatHappened);
+        Assert.Equal("KH-YTMUSIC-NOT-SET-UP", ex.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task StartAsync_LaunchFails_ThrowsKHostException()
+    {
+        _controller.Snapshot = SessionSnapshot.None;
+        _controller.CommandsSucceed = false;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        Assert.Equal("YouTube Music: couldn't open Microsoft Edge to start break music.", ex.WhatHappened);
+        Assert.Equal("KH-YTMUSIC-LAUNCH-FAILED", ex.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task StartAsync_LaunchedAppNeverMakesASession_ThrowsKHostException()
+    {
+        _controller.Snapshot = SessionSnapshot.None;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        Assert.Contains("nothing started playing", ex.WhatHappened);
+        Assert.Equal("KH-YTMUSIC-SESSION-TIMEOUT", ex.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task StartAsync_PlayRefused_ThrowsKHostException()
+    {
+        _controller.Snapshot = Paused;
+        _controller.CommandsSucceed = false;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        Assert.Equal("YouTube Music: refused to play.", ex.WhatHappened);
+        Assert.Equal("KH-YTMUSIC-PLAY-REFUSED", ex.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task StartAsync_StartFailureCauses_DoNotFlash()
+    {
+        _controller.Snapshot = Paused;
+        _controller.CommandsSucceed = false;
+
+        await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
+
+        _flash.DidNotReceive().Show(Arg.Any<string>(), Arg.Any<FlashType>());
+    }
+
+    // A host pressing play twice while the same cause persists should hear the reason twice — it is
+    // a reply to their own action, not a one-time notice.
+    [Fact]
+    public async Task StartAsync_RepeatedFailureSameCause_EachCallThrows()
+    {
+        _controller.Snapshot = SessionSnapshot.None;
+
+        var provider = Build(new YouTubeMusicSettings { LaunchIfNotRunning = false });
+
+        await Assert.ThrowsAsync<KHostException>(() => provider.StartAsync());
+        await Assert.ThrowsAsync<KHostException>(() => provider.StartAsync());
+        await Assert.ThrowsAsync<KHostException>(() => provider.StartAsync());
+    }
+
+    [Fact]
+    public async Task ResumeAsync_PlayRefused_ThrowsKHostException()
+    {
+        _controller.Snapshot = Paused;
+        _controller.CommandsSucceed = false;
+
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().ResumeAsync());
+
+        Assert.Equal("YouTube Music: refused to play.", ex.WhatHappened);
+        Assert.Equal("KH-YTMUSIC-PLAY-REFUSED", ex.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task StartAsync_AlreadyPlaying_DoesNotFlash()
+    {
+        _controller.Snapshot = Playing;
+
+        Assert.True(await Build().StartAsync());
+
+        _flash.DidNotReceive().Show(Arg.Any<string>(), Arg.Any<FlashType>());
+    }
+
+    // "Are you still there?" recovery is a background retry, never a host-caused failure, so it
+    // stays log-only whether it succeeds or not.
+    [Fact]
+    public void SessionChanged_PausedByItself_NeverFlashes()
+    {
+        Build();
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+
+        _controller.Snapshot = Paused;
+        _controller.RaiseSessionChanged();
+
+        _flash.DidNotReceive().Show(Arg.Any<string>(), Arg.Any<FlashType>());
+    }
+
+    [Fact]
+    public void SessionChanged_PausedByItselfAndRecoveryFails_StillDoesNotFlash()
+    {
+        Build();
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+
+        _controller.CommandsSucceed = false;
+        _controller.Snapshot = Paused;
+        _controller.RaiseSessionChanged();
+
+        _flash.DidNotReceive().Show(Arg.Any<string>(), Arg.Any<FlashType>());
     }
 }
 
