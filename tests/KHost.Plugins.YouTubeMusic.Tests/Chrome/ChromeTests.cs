@@ -10,7 +10,7 @@ public class ChromeArgumentsTests
     [Fact]
     public void ForApp_WithStartUrl_OpensAnAppWindowAtThatUrlOnThePluginsProfile()
     {
-        var arguments = ChromeArguments.ForApp(Profile, List);
+        var arguments = ChromeArguments.ForApp(Profile, List, appInstalled: false);
 
         Assert.Contains($"--user-data-dir={Profile}", arguments);
         Assert.Equal($"--app={List}", arguments[^1]);
@@ -18,7 +18,7 @@ public class ChromeArgumentsTests
 
     [Fact]
     public void ForApp_NoStartUrl_OpensTheHomePage()
-        => Assert.Equal("--app=https://music.youtube.com/", ChromeArguments.ForApp(Profile, null)[^1]);
+        => Assert.Equal("--app=https://music.youtube.com/", ChromeArguments.ForApp(Profile, null, appInstalled: false)[^1]);
 
     // Only YouTube Music is ever opened in the window, whatever reached the controller.
     [Theory]
@@ -26,12 +26,12 @@ public class ChromeArgumentsTests
     [InlineData("http://music.youtube.com/watch?list=PLx")]
     [InlineData("not a url")]
     public void ForApp_StartUrlNotYouTubeMusic_OpensTheHomePageInstead(string startUrl)
-        => Assert.Equal("--app=https://music.youtube.com/", ChromeArguments.ForApp(Profile, startUrl)[^1]);
+        => Assert.Equal("--app=https://music.youtube.com/", ChromeArguments.ForApp(Profile, startUrl, appInstalled: false)[^1]);
 
     [Fact]
     public void ForApp_Always_KeepsPlayingWhenHiddenAndStartsWithoutAClick()
     {
-        var arguments = ChromeArguments.ForApp(Profile, List);
+        var arguments = ChromeArguments.ForApp(Profile, List, appInstalled: false);
 
         Assert.Contains("--autoplay-policy=no-user-gesture-required", arguments);
         Assert.Contains("--disable-backgrounding-occluded-windows", arguments);
@@ -40,6 +40,34 @@ public class ChromeArgumentsTests
         Assert.Contains("--hide-crash-restore-bubble", arguments);
         Assert.Contains("--no-first-run", arguments);
     }
+
+    // Only the installed app comes up under a Dock icon of its own; an --app= window hides under Chrome's.
+    [Fact]
+    public void ForApp_AppInstalled_LaunchesTheAppByIdOnThePluginsProfile()
+    {
+        var arguments = ChromeArguments.ForApp(Profile, null, appInstalled: true);
+
+        Assert.Equal("--app-id=cinhimbnkkaeohfgghhklpknlkffjgod", arguments[^1]);
+        Assert.Contains($"--user-data-dir={Profile}", arguments);
+        Assert.Contains("--autoplay-policy=no-user-gesture-required", arguments);
+        Assert.DoesNotContain(arguments, argument => argument.StartsWith("--app=", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ForApp_AppInstalledWithStartUrl_OpensTheAppAtThatUrl()
+    {
+        var arguments = ChromeArguments.ForApp(Profile, List, appInstalled: true);
+
+        Assert.Equal($"--app-launch-url-for-shortcuts-menu-item={List}", arguments[^1]);
+        Assert.Contains("--app-id=cinhimbnkkaeohfgghhklpknlkffjgod", arguments);
+        Assert.DoesNotContain(arguments, argument => argument.StartsWith("--app=", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ForApp_AppInstalledStartUrlNotYouTubeMusic_OpensTheAppWhereItOpens()
+        => Assert.Equal(
+            "--app-id=cinhimbnkkaeohfgghhklpknlkffjgod",
+            ChromeArguments.ForApp(Profile, "https://evil.example/watch?list=PLx", appInstalled: true)[^1]);
 
     [Fact]
     public void ForSetup_OpensAnOrdinaryWindowAtYouTubeMusic()
@@ -136,6 +164,19 @@ public class ChromeProfileTests : IDisposable
         ChromeProfile.AllowAppleEvents(_directory);
 
         Assert.True(ChromeProfile.AppleEventsAllowed(_directory));
+    }
+
+    [Fact]
+    public void HasYouTubeMusicApp_OnlyOnceItsIconsFolderIsThere()
+    {
+        var resources = Path.Combine(_directory, "Default", "Web Applications", "Manifest Resources");
+
+        // Chrome preinstalls its own apps into a fresh profile; their folders say nothing about this one.
+        Directory.CreateDirectory(Path.Combine(resources, "agimnkijcaahngcdmfeangaknmldooml"));
+        Assert.False(ChromeProfile.HasYouTubeMusicApp(_directory));
+
+        Directory.CreateDirectory(Path.Combine(resources, "cinhimbnkkaeohfgghhklpknlkffjgod"));
+        Assert.True(ChromeProfile.HasYouTubeMusicApp(_directory));
     }
 
     [Fact]

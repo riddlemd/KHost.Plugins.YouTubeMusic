@@ -15,6 +15,11 @@ public enum SetupStatus
     /// <summary>macOS only: the host app may not script the browser (Privacy &amp; Security →
     /// Automation), or has not been asked yet.</summary>
     NotPermitted,
+
+    /// <summary>macOS only: plays, but the app is not installed in the profile, so its window has no
+    /// Dock icon of its own and the host cannot reach it from the Dock. Installing it is the last
+    /// step of setup, not a condition of playing.</summary>
+    ReadyWithoutApp,
 }
 
 /// <summary>Drives the YouTube Music app on this machine. Reports raw session reads; deciding what

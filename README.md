@@ -4,7 +4,7 @@ Break-music provider for [KHost](../KHost). It puts YouTube Music on between sin
 out when one starts.
 
 The plugin **drives YouTube Music in a browser on this machine; it does not carry the audio**:
-the app installed in Microsoft Edge on Windows, a Google Chrome app window on macOS. The sound
+the app installed in Microsoft Edge on Windows, the app installed in Google Chrome on macOS. The sound
 comes out of the browser, so the host cannot route it to a screen or a Cast device, and
 `RendersThroughHost` is false. There is no API key and no OAuth: the plugin uses the signed-in
 page already on the machine.
@@ -39,17 +39,26 @@ shared.
 - **Google Chrome is required**, and runs on its own profile: `--user-data-dir` defaults to
   `~/Library/Application Support/KHost/youtube-music-chrome` (the same *profile folder* setting
   overrides it). The host's own Chrome, if open, is a separate process and is never scripted.
-- **The window** is a chromeless `--app=` window on music.youtube.com, opened through `open -n -g`
-  so it starts behind the karaoke screen and as its own app rather than a child of KHost. Chrome on
-  macOS has no switch that installs the web app, and nothing here needs it installed. Same kiosk
-  switches as Windows, plus `--disable-renderer-backgrounding` and
-  `--disable-background-timer-throttling`.
+- **The window** is the YouTube Music app installed in that profile, launched with
+  `--app-id=cinhimbnkkaeohfgghhklpknlkffjgod` (the same id Edge uses) through `open -n -g`, so
+  Chrome is its own app rather than a child of KHost. Chrome draws an installed app's window in an
+  *app shim* (`~/Applications/Chrome Apps.localized/YouTube Music.app`), which gives it a
+  **YouTube Music** icon in the Dock, in ⌘-Tab and in Mission Control; clicking it raises the
+  break-music window. A playlist goes in through `--app-launch-url-for-shortcuts-menu-item`, which
+  keeps the window the installed app. Same kiosk switches as Windows, plus
+  `--disable-renderer-backgrounding` and `--disable-background-timer-throttling`.
+- **Before the app is installed** it still plays, in an anonymous `--app=` window. That window has
+  no icon of its own: it sits under a second *Google Chrome* Dock icon, and clicking that icon
+  opens a new Chrome window rather than showing the player. Installing the app is what fixes that,
+  so the setup button says *Install the YouTube Music app* until the profile has it (the app's
+  folder under `Default/Web Applications/Manifest Resources/`).
 - **Control is Apple Events to that one Chrome process, by pid** (read from the profile's
   `SingletonLock`). Chrome's `execute javascript` runs a script in the page, and everything goes
   through it: play, pause, next, volume, now-playing (`navigator.mediaSession`), adverts (the
   player's `ad-showing` class) and the playlist (navigating the app window). Addressing Chrome by
   name, or JXA's `Application(pid)`, would reach whichever Chrome LaunchServices picks, which can
-  be the host's own.
+  be the host's own. The app shim draws the window but does not answer scripts: the browser
+  process behind it does, and its pid is still the one in `SingletonLock`.
 - That script runs in an *isolated world*, where the page's player API is invisible. It re-runs
   itself in the page's own world through a `<script>` element (a Trusted Types policy and the
   page's nonce); if YouTube ever closes that door it falls back to the DOM alone (`<video>`, the
@@ -82,10 +91,16 @@ shared.
    macOS asks once whether KHost (or the terminal it was started from) may control Google
    Chrome. Allow it. If it was refused, the button reads *Allow KHost to control Google Chrome*
    and opens System Settings → Privacy & Security → Automation, where it can be turned on.
-3. Sign in (optional, but see Premium below). Close the setup window afterwards: a YouTube Music
-   tab left in it is only driven when no app window is open.
-4. Choose **YouTube Music** as the venue's break-music provider. The first Play opens the app
-   window at the playlist.
+3. Sign in (optional, but see Premium below).
+4. Install the app: click the install icon at the right of Chrome's address bar (*Install YouTube
+   Music*), then **Next** and **Install**; or ⋮ → *Cast, save and share* → *Install page as app*.
+   Chrome on macOS has no switch or policy a plugin can use to do this for you. The button changes
+   from *Install the YouTube Music app* to *Set up YouTube Music again* once the plugin sees it.
+5. **Quit that Chrome** (⌘Q while its window is in front). An app installed into a running Chrome
+   stays under Chrome's own icon until it quits; the next Play comes up under the YouTube Music
+   icon.
+6. Choose **YouTube Music** as the venue's break-music provider. The first Play opens the app at
+   the playlist.
 
 The plugin turns on Chrome's *Allow JavaScript from Apple Events* in its own profile before
 Chrome starts; nothing needs ticking by hand.
@@ -127,6 +142,13 @@ song and will be named on Windows; on macOS the page itself says it is an advert
   broken before. On macOS it is the player's own `nextVideo()`, which YouTube can rename too: the
   page script is the part to fix when a YouTube Music update breaks control.
 - **macOS: a skip during an advert skips the advert's song as well**, as the app's own Next does.
+- **macOS: the plugin's Chrome still has a Google Chrome Dock icon of its own** beside the
+  YouTube Music one, since the browser process behind the app is a second Chrome. Clicking it opens
+  a new Chrome window on the plugin's profile, not the player; use the YouTube Music icon. Both
+  quit together.
+- **macOS: one YouTube Music app per Mac is the clear case.** If the host's own Chrome also has
+  YouTube Music installed, Chrome names the second shim *YouTube Music 1* and both carry the same
+  bundle id, so two YouTube Music icons can show at once.
 - **A playlist change applies the next time the app has nothing loaded.** On Windows the media
   transport cannot navigate the app; on macOS an open app window with nothing playing is pointed
   at the list.
