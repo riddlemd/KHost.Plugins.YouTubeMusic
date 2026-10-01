@@ -9,8 +9,8 @@ using Microsoft.Extensions.Logging;
 
 namespace KHost.Plugins.YouTubeMusic;
 
-/// <summary>Break music out of YouTube Music in a browser on this machine: the app installed in Edge
-/// on Windows, a Chrome app window on macOS. The host carries none of this audio, so nothing here
+/// <summary>Break music out of YouTube Music on this machine: the app installed in Edge on Windows,
+/// KHost's own YouTube Music app on macOS. The host carries none of this audio, so nothing here
 /// reaches a screen or a Cast device.</summary>
 public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPluginButtonHandler
 {
@@ -39,11 +39,14 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     private static readonly TimeSpan SetupStatusLifetime = TimeSpan.FromSeconds(5);
 
+    internal const string SignedOutMessage = "YouTube Music: signed out — press Set up to sign in again";
+
     private readonly ILogger<YouTubeMusicBreakMusicProvider> _logger;
     private readonly IMessageBroker? _broker;
     private readonly IFlashService? _flash;
     private readonly IYouTubeMusicController _controller;
     private readonly SessionTracker _tracker = new();
+    private readonly SignInWatch _signIn = new();
     private readonly TimeProvider _time;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly string? _startUrl;
@@ -64,6 +67,9 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     private float _level = 1f;
 
+    /// <summary>The venue has asked for music and not since paused or stopped it.</summary>
+    private volatile bool _wanted;
+
     /// <summary>The last level the mixer took; NaN until it has taken one.</summary>
     private float _applied = float.NaN;
 
@@ -71,8 +77,8 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     public YouTubeMusicBreakMusicProvider(
         ILogger<YouTubeMusicBreakMusicProvider> logger, IPluginContext context, IMessageBroker broker,
-        IFlashService flashService)
-        : this(logger, context, controller: null, broker, flashService)
+        IFlashService flashService, IHostDirectories directories)
+        : this(logger, context, controller: null, broker, flashService, binDirectory: directories.BinDirectory)
     {
     }
 
@@ -83,7 +89,8 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         IMessageBroker? broker = null,
         IFlashService? flashService = null,
         TimeProvider? time = null,
-        Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        string? binDirectory = null)
     {
         _logger = logger;
         _broker = broker;
@@ -98,7 +105,8 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         _fade = TimeSpan.FromMilliseconds(Math.Max(0, settings.FadeMilliseconds));
         _recoverUnexpectedPause = settings.RecoverUnexpectedPause;
 
-        _controller = controller ?? YouTubeMusicControllerFactory.ForCurrentPlatform(logger, settings.ProfileDirectory);
+        _controller = controller ?? YouTubeMusicControllerFactory.ForCurrentPlatform(
+            logger, settings.ProfileDirectory, binDirectory ?? throw new ArgumentNullException(nameof(binDirectory)));
 
         if (!string.IsNullOrWhiteSpace(settings.PlaylistUrl) && _startUrl is null)
         {
@@ -113,7 +121,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
             return;
         }
 
-        if (SetupStatusNow() == SetupStatus.AppNotInstalled)
+        if (SetupStatusNow() is SetupStatus.AppNotInstalled or SetupStatus.NotSignedIn)
             context.ReportWarning(_controller.NotSetUpWarning);
 
         _controller.SessionChanged += (_, _) => _ = RefreshAsync();
@@ -145,7 +153,9 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         {
             _logger.LogInformation("YouTube Music break music cannot start: {Reason}", reason);
 
-            if (SetupStatusNow() == SetupStatus.Unsupported)
+            var status = SetupStatusNow();
+
+            if (status == SetupStatus.Unsupported)
             {
                 throw new KHostException(
                     "YouTube Music: break music only runs on Windows and macOS.",
@@ -153,11 +163,21 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                     "KH-YTMUSIC-UNSUPPORTED");
             }
 
+            if (status == SetupStatus.HelperMissing)
+            {
+                throw new KHostException(
+                    "YouTube Music: this build of the plugin has no YouTube Music app for macOS.",
+                    "Install a release of the plugin built with the macOS app, then restart KHost.",
+                    "KH-YTMUSIC-NO-HELPER");
+            }
+
             throw new KHostException(
                 $"YouTube Music: couldn't start break music — {_controller.BrowserName} isn't installed on this machine.",
                 $"Install {_controller.BrowserName}, then try again.",
                 "KH-YTMUSIC-NO-BROWSER");
         }
+
+        _wanted = true;
 
         var rampToken = await TakeLevelAsync(cancellationToken);
 
@@ -170,8 +190,6 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
             if (before is null)
             {
-                ThrowIfNotPermitted();
-
                 // Opening the app again on every try would stack windows without ever seeing one.
                 _logger.LogWarning("Cannot see YouTube Music's media session, so break music was not started");
                 throw new KHostException(
@@ -202,12 +220,14 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     public async Task PauseAsync(CancellationToken cancellationToken = default)
     {
+        _wanted = false;
         _tracker.NotePauseRequested(_time.GetUtcNow());
         await FadeOutThenPauseAsync(fade: true, cancellationToken);
     }
 
     public async Task ResumeAsync(CancellationToken cancellationToken = default)
     {
+        _wanted = true;
         _tracker.NotePlayRequested();
 
         var rampToken = await TakeLevelAsync(cancellationToken);
@@ -225,7 +245,10 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     /// <summary>Fades over the configured length whenever the host asks for any fade; the host's
     /// own figure is a hint, and this plugin's setting is what the host chose for it.</summary>
     public Task StopAsync(TimeSpan? fadeDuration = null, CancellationToken cancellationToken = default)
-        => FadeOutThenPauseAsync(fadeDuration > TimeSpan.Zero, cancellationToken);
+    {
+        _wanted = false;
+        return FadeOutThenPauseAsync(fadeDuration > TimeSpan.Zero, cancellationToken);
+    }
 
     public async Task SkipAsync(CancellationToken cancellationToken = default)
     {
@@ -267,26 +290,15 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         switch (key)
         {
             case SetupButton:
-                var installing = SetupStatusNow() == SetupStatus.ReadyWithoutApp;
-
                 if (!await _controller.OpenSetupAsync(cancellationToken))
                 {
                     _logger.LogWarning("YouTube Music setup could not open {Browser}", _controller.BrowserName);
                     _flash?.Show($"YouTube Music: couldn't open {_controller.BrowserName} for setup.", FlashType.Warning);
                 }
-                else if (installing)
-                {
-                    // An app installed into a running Chrome keeps its window under Chrome's own icon
-                    // until that Chrome quits; only the next launch comes up under the app's.
-                    _flash?.Show(
-                        $"YouTube Music: in {_controller.BrowserName}, click the install icon in the address bar, then Install. "
-                        + $"Quit {_controller.BrowserShortName} afterwards, and the next Play opens it under its own Dock icon.",
-                        FlashType.Warning);
-                }
                 break;
 
             case OpenButton:
-                if (!await _controller.LaunchAppAsync(startUrl: null, cancellationToken))
+                if (!await _controller.ShowAppAsync(cancellationToken))
                 {
                     _logger.LogWarning("YouTube Music could not be launched from the Plugins page");
                     _flash?.Show($"YouTube Music: couldn't open {_controller.BrowserName} to launch the app.", FlashType.Warning);
@@ -310,11 +322,11 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
             {
                 SetupStatus.Unsupported => new PluginButtonState { Enabled = false, Label = "YouTube Music: Windows and macOS only" },
                 SetupStatus.BrowserNotFound => new PluginButtonState { Enabled = false, Label = $"{_controller.BrowserName} not found" },
+                SetupStatus.HelperMissing => new PluginButtonState { Enabled = false, Label = "YouTube Music app missing from this plugin build" },
                 SetupStatus.Ready => new PluginButtonState { Label = "Set up YouTube Music again" },
 
-                // Plays already; installing is what gives the window a Dock icon the host can find it by.
-                SetupStatus.ReadyWithoutApp => new PluginButtonState { Label = "Install the YouTube Music app" },
-                SetupStatus.NotPermitted => new PluginButtonState { Label = $"Allow KHost to control {_controller.BrowserName}" },
+                // Plays already, signed out and so with adverts; signing in is the rest of setup.
+                SetupStatus.NotSignedIn => new PluginButtonState { Label = "Sign in to YouTube Music" },
                 _ => PluginButtonState.Default,
             },
             OpenButton => new PluginButtonState { Visible = CanPlay(status) },
@@ -322,7 +334,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         };
     }
 
-    private static bool CanPlay(SetupStatus status) => status is SetupStatus.Ready or SetupStatus.ReadyWithoutApp;
+    private static bool CanPlay(SetupStatus status) => status is SetupStatus.Ready or SetupStatus.NotSignedIn;
 
     /// <summary>Cached briefly: the row is redrawn often, and the check reads the profile's files.</summary>
     private SetupStatus SetupStatusNow()
@@ -350,8 +362,6 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 + "then try again.",
                 "KH-YTMUSIC-NOT-RUNNING");
         }
-
-        ThrowIfNotPermitted();
 
         if (!CanPlay(SetupStatusNow()))
         {
@@ -391,10 +401,6 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
         if (session is not { Playback: not SessionPlayback.None })
         {
-            // A consent missing on macOS shows up only once the browser is up to be asked about.
-            _setupStatus = null;
-            ThrowIfNotPermitted();
-
             _logger.LogWarning(
                 _startUrl is null
                     ? "YouTube Music opened but nothing started. Set a playlist in this plugin's settings, or start one in the app"
@@ -433,21 +439,6 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
 
         return await PlayRisingAsync(rampToken, cancellationToken);
-    }
-
-    /// <summary>macOS only: without the host's consent every script to Chrome is refused, which
-    /// would otherwise read as "couldn't check what's playing" or a launch that never sounds.</summary>
-    private void ThrowIfNotPermitted()
-    {
-        if (SetupStatusNow() != SetupStatus.NotPermitted)
-            return;
-
-        _logger.LogWarning("KHost is not allowed to control {Browser}, so break music was not started", _controller.BrowserName);
-        throw new KHostException(
-            $"YouTube Music: KHost isn't allowed to control {_controller.BrowserName}.",
-            $"Press \"Allow KHost to control {_controller.BrowserName}\" on the Plugins page, or turn it on in System "
-            + "Settings → Privacy & Security → Automation, then try again.",
-            "KH-YTMUSIC-NOT-PERMITTED");
     }
 
     /// <summary>Silent before play, so the first thing the room hears is the bottom of the rise.</summary>
@@ -672,6 +663,8 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         if (observation.Changed)
             _broker?.Announce(new BreakMusicTrackChanged(SourceName));
 
+        NoteSignIn(snapshot?.SignedIn);
+
         if (observation.Pending)
         {
             _ = Task.Run(async () =>
@@ -685,6 +678,21 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
             _ = RecoverFromPauseAsync(snapshot);
 
         return observation;
+    }
+
+    /// <summary>Keeps playing signed out: the host is told once, and the setup button moves to the sign-in.</summary>
+    private void NoteSignIn(bool? signedIn)
+    {
+        var before = _signIn.SignedIn;
+
+        if (_signIn.Observe(signedIn, _wanted))
+        {
+            _logger.LogWarning("YouTube Music was signed out while break music was wanted; playing on signed out");
+            _flash?.Show(SignedOutMessage, FlashType.Warning);
+        }
+
+        if (_signIn.SignedIn != before)
+            _setupStatus = null;
     }
 
     /// <summary>YouTube Music pauses on its own after a long stretch with nobody touching the page,

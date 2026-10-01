@@ -7,19 +7,19 @@ public enum SetupStatus
     Unsupported,
     BrowserNotFound,
 
-    /// <summary>The browser is here, but the plugin's profile is not ready: on Windows the app is
-    /// not installed in it, on macOS it has never been opened.</summary>
+    /// <summary>Windows only: Edge is here, but the app is not installed in the plugin's profile.</summary>
     AppNotInstalled,
+
+    /// <summary>Set up; on macOS, also signed in to a Google account.</summary>
     Ready,
 
-    /// <summary>macOS only: the host app may not script the browser (Privacy &amp; Security →
-    /// Automation), or has not been asked yet.</summary>
-    NotPermitted,
+    /// <summary>macOS only: the plugin carries no YouTube Music app for this Mac (a build made
+    /// without one), and none was installed before.</summary>
+    HelperMissing,
 
-    /// <summary>macOS only: plays, but the app is not installed in the profile, so its window has no
-    /// Dock icon of its own and the host cannot reach it from the Dock. Installing it is the last
+    /// <summary>macOS only: plays, but signed out, so adverts reach the room. Signing in is the last
     /// step of setup, not a condition of playing.</summary>
-    ReadyWithoutApp,
+    NotSignedIn,
 }
 
 /// <summary>Drives the YouTube Music app on this machine. Reports raw session reads; deciding what
@@ -29,7 +29,8 @@ public interface IYouTubeMusicController
     /// <summary>Why nothing here can play, or null where the backend works.</summary>
     string? Unavailable { get; }
 
-    /// <summary>The browser the app runs in, as the host knows it ("Microsoft Edge").</summary>
+    /// <summary>The browser the app runs in, as the host knows it ("Microsoft Edge"); on macOS the
+    /// plugin's own YouTube Music app.</summary>
     string BrowserName { get; }
 
     /// <summary>The same, short, as in "this plugin's Edge profile".</summary>
@@ -57,9 +58,13 @@ public interface IYouTubeMusicController
     Task<bool> LaunchAppAsync(string? startUrl, CancellationToken cancellationToken = default);
 
     /// <summary>Opens the plugin's profile as an ordinary browser window, for signing in and
-    /// installing the app. On macOS this is also when the host is asked to let KHost control
-    /// Chrome.</summary>
+    /// installing the app; on macOS, the YouTube Music window at music.youtube.com.</summary>
     Task<bool> OpenSetupAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Puts the app window in front of the host, launching it if need be. Unlike
+    /// <see cref="LaunchAppAsync"/>, which starts it behind the karaoke screen for the music.</summary>
+    Task<bool> ShowAppAsync(CancellationToken cancellationToken = default)
+        => LaunchAppAsync(startUrl: null, cancellationToken);
 
     Task<bool> PlayAsync(CancellationToken cancellationToken = default);
     Task<bool> PauseAsync(CancellationToken cancellationToken = default);

@@ -17,8 +17,8 @@ public class YouTubeMusicSettings
     /// cannot tell apart from YouTube Music's idle prompt.</summary>
     public bool RecoverUnexpectedPause { get; set; } = true;
 
-    /// <summary>Blank uses <see cref="Edge.EdgeProfile.DefaultDirectory"/> on Windows and
-    /// <see cref="Chrome.ChromeProfile.DefaultDirectory"/> on macOS. Never point it at the host's own
-    /// browser profile: two browsers on one user-data-dir refuse to start.</summary>
+    /// <summary>Windows only; blank uses <see cref="Edge.EdgeProfile.DefaultDirectory"/>. Never point
+    /// it at the host's own browser profile: two browsers on one user-data-dir refuse to start. macOS
+    /// has nothing to set: the YouTube Music app keeps its own data store.</summary>
     public string ProfileDirectory { get; set; } = "";
 }

@@ -602,46 +602,6 @@ public class YouTubeMusicBreakMusicProviderTests
         _context.Received(1).ReportWarning(Arg.Is<string>(m => m.Contains("Set up YouTube Music")));
     }
 
-    // macOS before the app is installed: it plays, so nothing may stop the show over a Dock icon.
-    [Fact]
-    public async Task StartAsync_ReadyWithoutApp_LaunchesAndPlays()
-    {
-        _controller.Snapshot = SessionSnapshot.None;
-        _controller.Status = SetupStatus.ReadyWithoutApp;
-        _controller.OnCommand = command => command.StartsWith("launch:", StringComparison.Ordinal) ? Playing : null;
-
-        Assert.True(await Build().StartAsync());
-        Assert.Equal("launch:", _controller.Calls[0]);
-    }
-
-    [Fact]
-    public void DescribeButton_ReadyWithoutApp_OffersTheInstallAndShowsOpen()
-    {
-        _controller.Status = SetupStatus.ReadyWithoutApp;
-
-        var provider = Build();
-
-        Assert.Equal("Install the YouTube Music app", provider.DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton).Label);
-        Assert.True(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
-        _context.DidNotReceive().ReportWarning(Arg.Any<string>());
-    }
-
-    // The install is a click in Chrome's address bar; the Plugins page is the only place to say so.
-    [Fact]
-    public async Task InvokeButtonAsync_SetupWithoutApp_SaysWhereToInstall()
-    {
-        _controller.BrowserName = "Google Chrome";
-        _controller.BrowserShortName = "Chrome";
-        _controller.Status = SetupStatus.ReadyWithoutApp;
-
-        await Build().InvokeButtonAsync(YouTubeMusicBreakMusicProvider.SetupButton);
-
-        Assert.Equal(["setup"], _controller.Calls);
-        _flash.Received(1).Show(
-            Arg.Is<string>(m => m.Contains("install icon in the address bar") && m.Contains("Quit Chrome")),
-            FlashType.Warning);
-    }
-
     [Fact]
     public async Task InvokeButtonAsync_SetupWhenReady_SaysNothing()
     {
@@ -665,105 +625,44 @@ public class YouTubeMusicBreakMusicProviderTests
     }
 
     [Fact]
-    public void DescribeButton_NotPermitted_OffersToAskAgainAndHidesOpen()
-    {
-        _controller.BrowserName = "Google Chrome";
-        _controller.Status = SetupStatus.NotPermitted;
-
-        var provider = Build();
-        var setup = provider.DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton);
-
-        Assert.True(setup.Enabled);
-        Assert.Equal("Allow KHost to control Google Chrome", setup.Label);
-        Assert.False(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
-    }
-
-    [Fact]
     public void DescribeButton_BrowserMissing_NamesThatBrowser()
     {
-        _controller.BrowserName = "Google Chrome";
         _controller.Status = SetupStatus.BrowserNotFound;
 
-        Assert.Equal("Google Chrome not found", Build().DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton).Label);
+        Assert.Equal("Microsoft Edge not found", Build().DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton).Label);
     }
 
     [Fact]
     public void Constructor_NotSetUp_WarnsWithTheBackendsOwnInstructions()
     {
         _controller.Status = SetupStatus.AppNotInstalled;
-        _controller.NotSetUpWarning = "Press setup; Chrome opens.";
+        _controller.NotSetUpWarning = "Press setup; Edge opens.";
 
         Build();
 
-        _context.Received(1).ReportWarning("Press setup; Chrome opens.");
-    }
-
-    [Fact]
-    public async Task StartAsync_NotPermittedAndSessionUnreadable_ThrowsNotPermittedWithoutLaunching()
-    {
-        _controller.BrowserName = "Google Chrome";
-        _controller.Status = SetupStatus.NotPermitted;
-        _controller.Snapshot = null;
-
-        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
-
-        Assert.Equal("KH-YTMUSIC-NOT-PERMITTED", ex.ReferenceCode);
-        Assert.Equal("YouTube Music: KHost isn't allowed to control Google Chrome.", ex.WhatHappened);
-        Assert.Empty(_controller.Calls);
-    }
-
-    [Fact]
-    public async Task StartAsync_NotPermittedWithNothingOpen_ThrowsNotPermittedWithoutLaunching()
-    {
-        _controller.Status = SetupStatus.NotPermitted;
-
-        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
-
-        Assert.Equal("KH-YTMUSIC-NOT-PERMITTED", ex.ReferenceCode);
-        Assert.Empty(_controller.Calls);
-    }
-
-    // Permission can only be read once Chrome is up, so a refusal surfaces after the launch.
-    [Fact]
-    public async Task StartAsync_RefusalSeenOnlyAfterLaunch_ThrowsNotPermittedRatherThanATimeout()
-    {
-        _controller.OnCommand = command =>
-        {
-            if (command.StartsWith("launch", StringComparison.Ordinal))
-                _controller.Status = SetupStatus.NotPermitted;
-
-            return null;
-        };
-        _controller.Snapshot = SessionSnapshot.None;
-        var provider = Build(new YouTubeMusicSettings { PlaylistUrl = Playlist });
-
-        var ex = await Assert.ThrowsAsync<KHostException>(() => provider.StartAsync());
-
-        Assert.Equal("KH-YTMUSIC-NOT-PERMITTED", ex.ReferenceCode);
+        _context.Received(1).ReportWarning("Press setup; Edge opens.");
     }
 
     [Fact]
     public async Task StartAsync_BrowserMissing_NamesThatBrowser()
     {
-        _controller.BrowserName = "Google Chrome";
-        _controller.Unavailable = "Google Chrome was not found";
+        _controller.Unavailable = "Microsoft Edge was not found";
         _controller.Status = SetupStatus.BrowserNotFound;
 
         var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
 
-        Assert.Equal("YouTube Music: couldn't start break music — Google Chrome isn't installed on this machine.", ex.WhatHappened);
+        Assert.Equal("YouTube Music: couldn't start break music — Microsoft Edge isn't installed on this machine.", ex.WhatHappened);
     }
 
     [Fact]
     public async Task StartAsync_NotSetUp_NamesTheBrowsersProfile()
     {
-        _controller.BrowserShortName = "Chrome";
         _controller.Status = SetupStatus.AppNotInstalled;
 
         var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
 
         Assert.Equal(
-            "YouTube Music: not set up in this plugin's Chrome profile. Press \"Set up YouTube Music\" on the Plugins page.",
+            "YouTube Music: not set up in this plugin's Edge profile. Press \"Set up YouTube Music\" on the Plugins page.",
             ex.WhatHappened);
     }
 
@@ -786,7 +685,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Status = SetupStatus.Ready;
         await provider.InvokeButtonAsync(YouTubeMusicBreakMusicProvider.OpenButton);
 
-        Assert.Equal(["setup", "launch:"], _controller.Calls);
+        Assert.Equal(["setup", "show"], _controller.Calls);
         Assert.True(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
     }
 
@@ -999,38 +898,136 @@ public class YouTubeMusicBreakMusicProviderTests
 
         _flash.DidNotReceive().Show(Arg.Any<string>(), Arg.Any<FlashType>());
     }
-}
 
-public class YouTubeMusicControllerFactoryTests
-{
-    // Constructing it only looks for Chrome; nothing is launched or scripted.
+    private static readonly SessionSnapshot SignedIn = Playing with { SignedIn = true };
+    private static readonly SessionSnapshot SignedOut = Playing with { SignedIn = false };
+
     [Fact]
-    public void ForCurrentPlatform_MacOS_IsTheChromeController()
+    public void DescribeButton_HelperMissing_DisablesSetupAndHidesOpen()
     {
-        if (!OperatingSystem.IsMacOS())
-            return;
+        _controller.Unavailable = "no app in this build";
+        _controller.Status = SetupStatus.HelperMissing;
 
-        var controller = YouTubeMusicControllerFactory.ForCurrentPlatform(NullLogger.Instance, "/tmp/khost-ytm-factory-test");
+        var provider = Build();
+        var setup = provider.DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton);
 
-        Assert.IsType<KHost.Plugins.YouTubeMusic.Mac.MacYouTubeMusicController>(controller);
-        Assert.Equal("Google Chrome", controller.BrowserName);
+        Assert.False(setup.Enabled);
+        Assert.Equal("YouTube Music app missing from this plugin build", setup.Label);
+        Assert.False(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
     }
 
     [Fact]
-    public void ForCurrentPlatform_NeitherWindowsNorMacOS_IsUnavailableWithAReason()
+    public async Task StartAsync_HelperMissing_ThrowsNoHelperWithoutTouchingTheApp()
     {
-        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
-            return;
+        _controller.Unavailable = "no app in this build";
+        _controller.Status = SetupStatus.HelperMissing;
 
-        var controller = YouTubeMusicControllerFactory.ForCurrentPlatform(NullLogger.Instance, "/tmp/profile");
+        var ex = await Assert.ThrowsAsync<KHostException>(() => Build().StartAsync());
 
-        Assert.Contains("Windows and macOS only", controller.Unavailable);
-        Assert.Equal(SetupStatus.Unsupported, controller.GetSetupStatus());
+        Assert.Equal("KH-YTMUSIC-NO-HELPER", ex.ReferenceCode);
+        Assert.Empty(_controller.Calls);
     }
 
     [Fact]
-    public void UnsupportedReason_NamesBothBackendsAndThePlatform()
-        => Assert.Equal(
-            "YouTube Music break music runs on Windows and macOS only for now; there is no backend for Ubuntu 24.04.",
-            YouTubeMusicControllerFactory.UnsupportedReason("Ubuntu 24.04"));
+    public void DescribeButton_NotSignedIn_OffersTheSignInAndShowsOpen()
+    {
+        _controller.Status = SetupStatus.NotSignedIn;
+
+        var provider = Build();
+
+        Assert.Equal("Sign in to YouTube Music", provider.DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton).Label);
+        Assert.True(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
+    }
+
+    // Signed out still plays (with adverts): nothing may stop the show over a sign-in.
+    [Fact]
+    public async Task StartAsync_NotSignedIn_LaunchesAndPlays()
+    {
+        _controller.Snapshot = SessionSnapshot.None;
+        _controller.Status = SetupStatus.NotSignedIn;
+        _controller.OnCommand = command => command.StartsWith("launch:", StringComparison.Ordinal) ? Playing : null;
+
+        Assert.True(await Build().StartAsync());
+        Assert.Equal("launch:", _controller.Calls[0]);
+    }
+
+    [Fact]
+    public void Constructor_NotSignedIn_WarnsWithTheBackendsOwnInstructions()
+    {
+        _controller.Status = SetupStatus.NotSignedIn;
+        _controller.NotSetUpWarning = "Sign in, please.";
+
+        Build();
+
+        _context.Received(1).ReportWarning("Sign in, please.");
+    }
+
+    [Fact]
+    public async Task InvokeButtonAsync_Open_ShowsTheAppRatherThanLaunchingItBehind()
+    {
+        await Build().InvokeButtonAsync(YouTubeMusicBreakMusicProvider.OpenButton);
+
+        Assert.Equal(["show"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task SessionChanged_SignedOutWhileTheVenueWantsMusic_FlashesOnceAndPlaysOn()
+    {
+        _controller.Snapshot = SignedIn;
+        var provider = Build();
+        await provider.StartAsync();
+        _controller.Calls.Clear();
+
+        _controller.Snapshot = SignedOut;
+        _controller.RaiseSessionChanged();
+        _controller.RaiseSessionChanged();
+
+        _flash.Received(1).Show(YouTubeMusicBreakMusicProvider.SignedOutMessage, FlashType.Warning);
+        Assert.DoesNotContain("pause", _controller.Calls);
+    }
+
+    [Fact]
+    public async Task SessionChanged_SignedOutAfterAStop_SaysNothingUntilTheNextStart()
+    {
+        _controller.Snapshot = SignedIn;
+        var provider = Build();
+        await provider.StartAsync();
+        await provider.StopAsync();
+
+        _controller.Snapshot = SignedOut with { Playback = SessionPlayback.Paused };
+        _controller.RaiseSessionChanged();
+        _flash.DidNotReceive().Show(Arg.Any<string>(), Arg.Any<FlashType>());
+
+        await provider.StartAsync();
+
+        _flash.Received(1).Show(YouTubeMusicBreakMusicProvider.SignedOutMessage, FlashType.Warning);
+    }
+
+    // Never signed in is a setup state the button already shows, not news.
+    [Fact]
+    public async Task StartAsync_NeverSignedIn_DoesNotFlash()
+    {
+        _controller.Snapshot = SignedOut;
+
+        await Build().StartAsync();
+        _controller.RaiseSessionChanged();
+
+        _flash.DidNotReceive().Show(Arg.Any<string>(), Arg.Any<FlashType>());
+    }
+
+    // The row would otherwise go on saying "set up again" for the length of the status cache.
+    [Fact]
+    public void DescribeButton_RightAfterASignOut_ReadsTheStatusAgain()
+    {
+        _controller.Snapshot = SignedIn;
+        var provider = Build();
+        _controller.RaiseSessionChanged();
+        Assert.Equal("Set up YouTube Music again", provider.DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton).Label);
+
+        _controller.Status = SetupStatus.NotSignedIn;
+        _controller.Snapshot = SignedOut;
+        _controller.RaiseSessionChanged();
+
+        Assert.Equal("Sign in to YouTube Music", provider.DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton).Label);
+    }
 }

@@ -1,35 +1,58 @@
 using KHost.Plugins.YouTubeMusic.Control;
-using KHost.Plugins.YouTubeMusic.Mac;
+using KHost.Plugins.YouTubeMusic.Helper;
+using System.Text.Json;
 
-namespace KHost.Plugins.YouTubeMusic.Tests.Mac;
+namespace KHost.Plugins.YouTubeMusic.Tests.Helper;
 
 public class PageStateTests
 {
     private static readonly DateTimeOffset ReadAt = new(2026, 10, 1, 20, 0, 0, TimeSpan.Zero);
 
     private static readonly PageReading Song = new(
-        Page: true, World: "main", Player: true, State: PageState.Playing, Paused: false,
+        Page: true, Player: true, State: PageState.Playing, Paused: false,
         Title: "Hello (Official Music Video)", Artist: "Adele", Position: 32.5, Duration: 367);
 
+    // The shape youtube-music-page.js answers "state" with, fields the plugin does not read included.
     [Fact]
     public void Parse_TheScriptsAnswer_ReadsEveryField()
     {
-        var reading = PageState.Parse(
-            """{"page":true,"world":"main","app":true,"player":true,"state":1,"paused":false,"ad":false,"title":"Hello","artist":"Adele","position":32.5,"duration":367,"volume":0.3,"stillThere":true}""");
+        var reading = PageState.Parse(Json(
+            """{"page":true,"player":true,"state":1,"paused":false,"ad":false,"title":"Hello","artist":"Adele","position":32.5,"duration":367,"volume":0.3,"stillThere":true,"signedIn":true,"levelHeld":false,"url":"https://music.youtube.com/watch?v=x","visibility":"hidden","windowVisible":false}"""));
 
         Assert.Equal(
-            new PageReading(true, "main", App: true, Player: true, State: 1, Paused: false, Title: "Hello", Artist: "Adele",
-                Position: 32.5, Duration: 367, Volume: 0.3, StillThere: true),
+            new PageReading(true, Player: true, State: 1, Paused: false, Title: "Hello", Artist: "Adele",
+                Position: 32.5, Duration: 367, Volume: 0.3, StillThere: true, SignedIn: true),
             reading);
     }
 
     [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("missing value")]
-    [InlineData("{\"page\":")]
-    public void Parse_NotAnAnswer_IsNull(string? json)
-        => Assert.Null(PageState.Parse(json));
+    [InlineData("\"missing value\"")]
+    [InlineData("[1,2]")]
+    [InlineData("{\"page\":\"yes\"}")]
+    public void Parse_NotAnAnswer_IsNull(string json)
+        => Assert.Null(PageState.Parse(Json(json)));
+
+    [Fact]
+    public void Parse_NoResult_IsNull()
+        => Assert.Null(PageState.Parse(null));
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ToSnapshot_CarriesTheSignIn(bool signedIn)
+        => Assert.Equal(signedIn, PageState.ToSnapshot(Song with { SignedIn = signedIn }, ReadAt).SignedIn);
+
+    // The home page has nothing loaded but still says whether the account is signed in.
+    [Fact]
+    public void ToSnapshot_NothingLoaded_StillCarriesTheSignIn()
+    {
+        var snapshot = PageState.ToSnapshot(Song with { State = PageState.Unstarted, Title = "", SignedIn = false }, ReadAt);
+
+        Assert.Equal(SessionPlayback.None, snapshot.Playback);
+        Assert.False(snapshot.SignedIn);
+    }
+
+    private static JsonElement Json(string text) => JsonDocument.Parse(text).RootElement.Clone();
 
     [Fact]
     public void ToSnapshot_PlayingSong_CarriesTrackTimelineAndReadTime()
