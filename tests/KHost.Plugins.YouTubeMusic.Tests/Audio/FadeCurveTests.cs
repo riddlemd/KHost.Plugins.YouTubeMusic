@@ -4,6 +4,26 @@ namespace KHost.Plugins.YouTubeMusic.Tests.Audio;
 
 public class FadeCurveTests
 {
+    // The same equal-decibel steps as the fall, walked back up, so the rise sounds as even.
+    [Fact]
+    public void RiseSteps_Always_AreTheFallWalkedBackUpEndingAtFull()
+    {
+        var rise = FadeCurve.RiseSteps(TimeSpan.FromMilliseconds(1500));
+        var fall = FadeCurve.GainSteps(TimeSpan.FromMilliseconds(1500));
+
+        Assert.Equal(15, rise.Count);
+        Assert.Equal(fall.Take(14).Reverse(), rise.Take(14));
+        Assert.Equal(1f, rise[^1]);
+    }
+
+    [Fact]
+    public void RiseSteps_NoDuration_IsEmpty()
+        => Assert.Empty(FadeCurve.RiseSteps(TimeSpan.Zero));
+
+    [Fact]
+    public void RiseSteps_ShorterThanOneStep_IsOneStepToFull()
+        => Assert.Equal([1f], FadeCurve.RiseSteps(TimeSpan.FromMilliseconds(30)));
+
     [Fact]
     public void GainSteps_DefaultFade_IsFifteenStepsEndingInSilence()
     {

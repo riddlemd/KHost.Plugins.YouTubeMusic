@@ -51,7 +51,22 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     private readonly TimeSpan _fade;
     private readonly bool _recoverUnexpectedPause;
 
+    /// <summary>One operation moves the level at a time. Taking it first cuts short whatever ramp is
+    /// running, so two ramps never fight and the newcomer carries on from where that one stopped.</summary>
+    private readonly SemaphoreSlim _levelGate = new(1, 1);
+    private readonly object _rampSync = new();
+    private CancellationTokenSource _rampCancel = new();
+    private Task _fadeIn = Task.CompletedTask;
+
+    /// <summary>Operations holding or waiting for the level, plus a running fade-in. While above zero
+    /// a venue volume change is only noted: the ramp ends on it, or the last one out applies it.</summary>
+    private int _levelBusy;
+
     private float _level = 1f;
+
+    /// <summary>The last level the mixer took; NaN until it has taken one.</summary>
+    private float _applied = float.NaN;
+
     private (SetupStatus Status, DateTimeOffset ReadAt)? _setupStatus;
 
     public YouTubeMusicBreakMusicProvider(
@@ -144,80 +159,73 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 "KH-YTMUSIC-NO-BROWSER");
         }
 
-        var before = await _controller.ReadAsync(cancellationToken);
-        Apply(before);
+        var rampToken = await TakeLevelAsync(cancellationToken);
 
-        _tracker.NotePlayRequested();
-
-        if (before is null)
+        try
         {
-            ThrowIfNotPermitted();
+            var before = await _controller.ReadAsync(cancellationToken);
+            Apply(before);
 
-            // Opening the app again on every try would stack windows without ever seeing one.
-            _logger.LogWarning("Cannot see YouTube Music's media session, so break music was not started");
-            throw new KHostException(
-                "YouTube Music: couldn't check what's playing, so break music wasn't started.",
-                "Try again.",
-                "KH-YTMUSIC-READ-FAILED");
+            _tracker.NotePlayRequested();
+
+            if (before is null)
+            {
+                ThrowIfNotPermitted();
+
+                // Opening the app again on every try would stack windows without ever seeing one.
+                _logger.LogWarning("Cannot see YouTube Music's media session, so break music was not started");
+                throw new KHostException(
+                    "YouTube Music: couldn't check what's playing, so break music wasn't started.",
+                    "Try again.",
+                    "KH-YTMUSIC-READ-FAILED");
+            }
+
+            if (before.Playback == SessionPlayback.Playing)
+            {
+                _logger.LogInformation("YouTube Music was already playing; leaving it as it is");
+                await ApplyLevelAsync(cancellationToken);
+                return true;
+            }
+
+            // A session already there is resumed where it stands: this is also how the host brings
+            // the bed back after every singer, and reloading the playlist would restart it from the top.
+            if (before.Playback != SessionPlayback.None)
+                return await PlayRisingAsync(rampToken, cancellationToken);
+
+            return await LaunchAndPlayAsync(rampToken, cancellationToken);
         }
-
-        if (before.Playback == SessionPlayback.Playing)
+        finally
         {
-            _logger.LogInformation("YouTube Music was already playing; leaving it as it is");
-            await ApplyLevelAsync(cancellationToken);
-            return true;
+            await ReleaseLevelAsync();
         }
-
-        // A session already there is resumed where it stands: this is also how the host brings the
-        // bed back after every singer, and reloading the playlist would restart it from the top.
-        if (before.Playback != SessionPlayback.None)
-            return await PlayAndLevelAsync(cancellationToken);
-
-        return await LaunchAndPlayAsync(cancellationToken);
     }
 
     public async Task PauseAsync(CancellationToken cancellationToken = default)
     {
         _tracker.NotePauseRequested(_time.GetUtcNow());
-        await _controller.PauseAsync(cancellationToken);
+        await FadeOutThenPauseAsync(fade: true, cancellationToken);
     }
 
     public async Task ResumeAsync(CancellationToken cancellationToken = default)
     {
         _tracker.NotePlayRequested();
-        await PlayAndLevelAsync(cancellationToken);
+
+        var rampToken = await TakeLevelAsync(cancellationToken);
+
+        try
+        {
+            await PlayRisingAsync(rampToken, cancellationToken);
+        }
+        finally
+        {
+            await ReleaseLevelAsync();
+        }
     }
 
     /// <summary>Fades over the configured length whenever the host asks for any fade; the host's
     /// own figure is a hint, and this plugin's setting is what the host chose for it.</summary>
-    public async Task StopAsync(TimeSpan? fadeDuration = null, CancellationToken cancellationToken = default)
-    {
-        var playing = (await _controller.ReadAsync(cancellationToken))?.Playback == SessionPlayback.Playing;
-        IReadOnlyList<float> steps = playing && fadeDuration > TimeSpan.Zero ? FadeCurve.GainSteps(_fade) : [];
-        var faded = false;
-
-        try
-        {
-            // The first set doubles as the check that the mixer can be reached at all; a fade with
-            // no session to ride would only hold the singer's start for nothing.
-            if (steps.Count > 0 && await _controller.SetLevelAsync(_level, cancellationToken))
-            {
-                faded = true;
-
-                foreach (var gain in steps)
-                {
-                    await _delay(FadeCurve.StepInterval, cancellationToken);
-                    await _controller.SetLevelAsync(_level * gain, cancellationToken);
-                }
-            }
-        }
-        finally
-        {
-            // Paused even when cancelled mid-fade: the alternative is a bed left playing half-faded
-            // under a singer.
-            await PauseThenRestoreLevelAsync(faded);
-        }
-    }
+    public Task StopAsync(TimeSpan? fadeDuration = null, CancellationToken cancellationToken = default)
+        => FadeOutThenPauseAsync(fadeDuration > TimeSpan.Zero, cancellationToken);
 
     public async Task SkipAsync(CancellationToken cancellationToken = default)
     {
@@ -245,9 +253,13 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     public async Task SetVolumeAsync(float volume, CancellationToken cancellationToken = default)
     {
-        _level = Math.Clamp(volume, 0f, 1f);
+        Volatile.Write(ref _level, Math.Clamp(volume, 0f, 1f));
 
-        await _controller.SetLevelAsync(_level, cancellationToken);
+        // A ramp in flight ends on the new level; setting it now would jump in the middle of a fade.
+        if (Interlocked.CompareExchange(ref _levelBusy, 0, 0) > 0)
+            return;
+
+        await SetLevelAsync(_level, cancellationToken);
     }
 
     public async Task InvokeButtonAsync(string key, CancellationToken cancellationToken = default)
@@ -326,7 +338,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         return status;
     }
 
-    private async Task<bool> LaunchAndPlayAsync(CancellationToken cancellationToken)
+    private async Task<bool> LaunchAndPlayAsync(CancellationToken rampToken, CancellationToken cancellationToken)
     {
         if (!_launchIfNotRunning && !_controller.IsBrowserRunning)
         {
@@ -407,12 +419,20 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
         if (session.Playback == SessionPlayback.Playing)
         {
-            await ApplyLevelAsync(cancellationToken);
+            // A fresh launch sounds before anything can reach its level, so the rise starts from
+            // the moment it is heard.
+            var steps = FadeCurve.RiseSteps(_fade);
+
+            if (steps.Count > 0 && await SetLevelAsync(0f, cancellationToken))
+                BeginRise(steps, rampToken);
+            else
+                await ApplyLevelAsync(cancellationToken);
+
             _logger.LogInformation("Break music playing from YouTube Music");
             return true;
         }
 
-        return await PlayAndLevelAsync(cancellationToken);
+        return await PlayRisingAsync(rampToken, cancellationToken);
     }
 
     /// <summary>macOS only: without the host's consent every script to Chrome is refused, which
@@ -430,8 +450,16 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
             "KH-YTMUSIC-NOT-PERMITTED");
     }
 
-    private async Task<bool> PlayAndLevelAsync(CancellationToken cancellationToken)
+    /// <summary>Silent before play, so the first thing the room hears is the bottom of the rise.</summary>
+    private async Task<bool> PlayRisingAsync(CancellationToken rampToken, CancellationToken cancellationToken)
     {
+        var steps = FadeCurve.RiseSteps(_fade);
+
+        // A mixer with nothing to hold yet (Edge before its first sound) plays at the level instead.
+        var rising = steps.Count > 0 && await SetLevelAsync(0f, cancellationToken);
+
+        // A refusal leaves the mixer silent; releasing the level puts it back before the throw
+        // reaches the host, or the next start would be silent too.
         if (!await _controller.PlayAsync(cancellationToken))
         {
             _logger.LogWarning("YouTube Music refused to play");
@@ -441,21 +469,167 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 "KH-YTMUSIC-PLAY-REFUSED");
         }
 
-        await ApplyLevelAsync(cancellationToken);
+        if (rising)
+            BeginRise(steps, rampToken);
+        else
+            await ApplyLevelAsync(cancellationToken);
 
         _logger.LogInformation("Break music playing from YouTube Music");
         return true;
     }
 
+    /// <summary>Not awaited by the caller: the host waits on start and resume, and a pause pressed
+    /// during the rise has to be able to cut it short.</summary>
+    private void BeginRise(IReadOnlyList<float> steps, CancellationToken rampToken)
+    {
+        Interlocked.Increment(ref _levelBusy);
+        _fadeIn = RiseAsync(steps, rampToken);
+    }
+
+    private async Task RiseAsync(IReadOnlyList<float> steps, CancellationToken rampToken)
+    {
+        try
+        {
+            foreach (var gain in steps)
+            {
+                await _delay(FadeCurve.StepInterval, rampToken);
+                await SetLevelAsync(Volatile.Read(ref _level) * gain, rampToken);
+            }
+        }
+        catch (OperationCanceledException) when (rampToken.IsCancellationRequested)
+        {
+            // Cut short by the next operation, which goes on from the level this left.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "YouTube Music's fade-in stopped part way");
+        }
+        finally
+        {
+            await LeaveLevelAsync();
+        }
+    }
+
+    /// <summary>Paused even when cancelled or cut short mid-fade: the alternative is a bed left
+    /// playing half-faded under a singer.</summary>
+    private async Task FadeOutThenPauseAsync(bool fade, CancellationToken cancellationToken)
+    {
+        var rampToken = await TakeLevelAsync(cancellationToken);
+
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, rampToken);
+            var faded = false;
+
+            try
+            {
+                var playing = (await _controller.ReadAsync(cancellationToken))?.Playback == SessionPlayback.Playing;
+                IReadOnlyList<float> steps = playing && fade ? FadeCurve.GainSteps(_fade) : [];
+
+                // From wherever a rise cut short left it, never above the venue's level.
+                var from = float.IsNaN(_applied) ? _level : Math.Min(_applied, _level);
+
+                // The first set doubles as the check that the mixer can be reached at all; a fade
+                // with no session to ride would only hold the singer's start for nothing.
+                if (steps.Count > 0 && await SetLevelAsync(from, linked.Token))
+                {
+                    faded = true;
+
+                    foreach (var gain in steps)
+                    {
+                        await _delay(FadeCurve.StepInterval, linked.Token);
+                        await SetLevelAsync(from * gain, linked.Token);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && rampToken.IsCancellationRequested)
+            {
+                // Cut short by the next operation, which runs once the pause has landed.
+            }
+            finally
+            {
+                await PauseThenRestoreLevelAsync(faded);
+            }
+        }
+        finally
+        {
+            await ReleaseLevelAsync();
+        }
+    }
+
+    /// <returns>The token that cuts short a ramp this operation starts.</returns>
+    private async Task<CancellationToken> TakeLevelAsync(CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _levelBusy);
+
+        lock (_rampSync)
+            _rampCancel.Cancel();
+
+        try
+        {
+            await _levelGate.WaitAsync(cancellationToken);
+        }
+        catch
+        {
+            await LeaveLevelAsync();
+            throw;
+        }
+
+        // Cancelled above; never faults.
+        await _fadeIn;
+
+        lock (_rampSync)
+        {
+            _rampCancel = new CancellationTokenSource();
+            return _rampCancel.Token;
+        }
+    }
+
+    private async Task ReleaseLevelAsync()
+    {
+        _levelGate.Release();
+        await LeaveLevelAsync();
+    }
+
+    /// <summary>The last one out applies a venue volume change that arrived while a ramp held it.</summary>
+    private async Task LeaveLevelAsync()
+    {
+        if (Interlocked.Decrement(ref _levelBusy) > 0)
+            return;
+
+        var level = Volatile.Read(ref _level);
+
+        if (float.IsNaN(_applied) || _applied == level)
+            return;
+
+        try
+        {
+            await SetLevelAsync(level, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not apply YouTube Music's level after a fade");
+        }
+    }
+
+    private async Task<bool> SetLevelAsync(float level, CancellationToken cancellationToken)
+    {
+        if (!await _controller.SetLevelAsync(level, cancellationToken))
+            return false;
+
+        _applied = level;
+        return true;
+    }
+
     private async Task ApplyLevelAsync(CancellationToken cancellationToken)
     {
-        if (await _controller.SetLevelAsync(_level, cancellationToken))
+        if (await SetLevelAsync(_level, cancellationToken))
             return;
 
         _ = Task.Run(async () =>
         {
             await _delay(LevelRetry, CancellationToken.None);
-            await _controller.SetLevelAsync(_level, CancellationToken.None);
+            await SetLevelAsync(_level, CancellationToken.None);
         }, CancellationToken.None);
     }
 
@@ -476,7 +650,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
 
         // Restored for the next start; the mixer remembers a level, and silence would outlive us.
-        await _controller.SetLevelAsync(_level, CancellationToken.None);
+        await SetLevelAsync(_level, CancellationToken.None);
     }
 
     private async Task RefreshAsync()

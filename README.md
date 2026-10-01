@@ -25,8 +25,7 @@ shared.
   which go to whatever app has focus. Title and artist come from the same session.
 - **Volume and fades** go through the Windows volume mixer (Core Audio, built-in COM interop, no
   package). The plugin sets the level of its own profile's Edge audio-service process. The venue
-  volume lands there. When a singer starts, the bed fades down on an equal-decibel curve over
-  *Fade out* milliseconds (default 1500), then pauses, then the level is put back for next time.
+  volume lands there. Fades are described under [Fades](#fades).
 - **Playlist.** Paste a YouTube Music (or YouTube) playlist link. It is used only when the app
   has nothing loaded, because the plugin then opens the app straight at that list. After a singer
   the bed resumes where it stopped and is never restarted from the top. A single-track link is
@@ -75,6 +74,27 @@ shared.
   [Pear Desktop](https://github.com/pear-devs/pear-desktop), MIT, © th-ch). Play also presses the
   dialog's confirm button if it is up.
 
+## Fades
+
+Every fade runs on one equal-decibel curve, a step every 100ms, over the *Fade length* setting
+(default 1500ms; 0 cuts at once both ways). The host passes no fade length to pause or resume, so
+the plugin applies its own setting to all of them.
+
+- **Pause, and stop when a singer starts:** the level steps down to silence, the app pauses, and
+  the venue level is put back so the next start is not silent. A cancelled fade still pauses and
+  restores.
+- **Start and resume:** the level is set to silence *before* play, play is pressed, then it steps
+  up to the venue level. A fresh launch starts sounding on its own, so it is cut to silence the
+  moment it is heard and rises from there. A refused play puts the venue level back before the
+  error reaches the host. Where the mixer has nothing to hold yet (Edge before its first sound),
+  it plays at the venue level with no rise.
+- **The rise does not hold the host:** start and resume return once play is pressed. A pause
+  during the rise cuts it short and fades down from wherever it got; a resume during a fade-out
+  lets the pause land, then rises from silence. One fade runs at a time. A venue volume change
+  during a fade is where that fade ends (or what the pause restores).
+- **"Are you still there?" recovery is not faded**: the level was never lowered, so play is
+  pressed at it, as before.
+
 ## One-time setup (Windows)
 
 1. Enable the plugin on KHost's Plugins page and restart KHost.
@@ -116,7 +136,7 @@ song and will be named on Windows; on macOS the page itself says it is an advert
 |---|---|---|
 | Playlist | blank | A YouTube Music link. Blank resumes whatever the app has loaded. |
 | Open YouTube Music if it is not already running | on | |
-| Fade out when a singer starts (ms) | 1500 | 0 pauses at once. |
+| Fade length (ms) | 1500 | Down on pause and when a singer starts, up on play and resume. 0 cuts at once. Stored as `fadeMilliseconds`. |
 | Press play again when YouTube Music pauses by itself | on | See below. |
 | Browser profile folder | blank | Blank uses `%LOCALAPPDATA%\KHost\youtube-music-profile` (Edge) or `~/Library/Application Support/KHost/youtube-music-chrome` (Chrome). |
 

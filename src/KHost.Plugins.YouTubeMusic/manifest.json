@@ -11,7 +11,7 @@
   "settings": [
     { "key": "playlistUrl", "type": "string", "section": "Break music", "label": "Playlist (YouTube Music link — blank resumes whatever the app has loaded)" },
     { "key": "launchIfNotRunning", "type": "bool", "section": "Break music", "label": "Open YouTube Music if it is not already running", "default": true },
-    { "key": "fadeMilliseconds", "type": "int", "section": "Break music", "label": "Fade out when a singer starts, in milliseconds (0 cuts at once)", "default": 1500 },
+    { "key": "fadeMilliseconds", "type": "int", "section": "Break music", "label": "Fade length in milliseconds: down on pause and when a singer starts, up on play and resume (0 cuts at once)", "default": 1500 },
     { "key": "recoverUnexpectedPause", "type": "bool", "section": "Break music", "label": "Press play again when YouTube Music pauses by itself (\"Are you still there?\")", "default": true },
     { "key": "profileDirectory", "type": "string", "section": "Browser profile", "label": "Browser profile folder for YouTube Music: Edge on Windows, Chrome on macOS (blank uses KHost's own)" }
   ],
