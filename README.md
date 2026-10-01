@@ -92,7 +92,8 @@ dotnet test tests/KHost.Plugins.YouTubeMusic.Tests
 
 Both targets build on any OS (`EnableWindowsTargeting`). `net10.0-windows10.0.19041.0` is the one
 that works. It carries the WinRT projection for the media transport, so ship that build.
-`-p:DeployToKHost=true` copies it into a sibling KHost checkout's runtime `plugins/` folder.
+A build copies this OS's target into a sibling KHost checkout's runtime `plugins/` folder when one
+exists, as the other plugins do; stop that host first, since it loads plugins only at startup.
 
 ## Installing
 

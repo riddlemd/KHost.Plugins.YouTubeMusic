@@ -48,16 +48,20 @@
     <Content Include="manifest.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <!-- Opt-in (-p:DeployToKHost=true): an automatic copy into a sibling checkout's runtime folder
-       would load this plugin into whatever host is started there next. -->
+  <!-- Dev convenience: drop the built plugin into a sibling KHost checkout's runtime plugins
+       folder when one exists. Harmless no-op anywhere else. -->
   <Target Name="DeployToSiblingKHost" AfterTargets="Build"
-          Condition="'$(DeployToKHost)' == 'true' And Exists('$(_KHostOutputDir)') And '$(TargetFramework)' == '$(_DeployTargetFramework)'">
+          Condition="Exists('$(_KHostOutputDir)') And '$(TargetFramework)' == '$(_DeployTargetFramework)'">
     <ItemGroup>
+      <!-- Globbed inside the target so it sees what is on disk now, not at evaluation. -->
       <_StalePluginFiles Include="$(_PluginDeployDir)\**\*" />
       <_PluginFiles Include="$(TargetDir)**\*" />
     </ItemGroup>
 
-    <!-- Emptied first so the two target frameworks never layer: only one ships the projection. -->
+    <!-- Emptied first, because a copy only overwrites what it brings, and so the two target
+         frameworks never layer: only one ships the WinRT projection. ContinueOnError so a running
+         KHost, which holds loaded plugin assemblies mapped on Windows, fails on the copy below
+         with a message naming the locking process instead of here with a bare delete error. -->
     <Delete Files="@(_StalePluginFiles)" ContinueOnError="true" />
 
     <Copy SourceFiles="@(_PluginFiles)"
