@@ -183,20 +183,176 @@ public class YouTubeMusicBreakMusicProviderTests
     }
 
     // The fade is what the host waits on before the singer's song starts; it has to come down in
-    // steps, stop, and leave the mixer where the venue set it for the next start.
+    // steps, stop, and leave the mixer at full for the next start.
     [Fact]
-    public async Task StopAsync_WithAFade_StepsDownThenPausesThenRestoresTheLevel()
+    public async Task StopAsync_WithAFade_StepsDownThenPausesThenRestoresFullLevel()
     {
         _controller.Snapshot = Playing;
         _controller.OnCommand = command => command == "pause" ? Paused : null;
 
-        var provider = Build(new YouTubeMusicSettings { FadeMilliseconds = 300 });
-        await provider.SetVolumeAsync(0.5f);
-        _controller.Calls.Clear();
+        await Build(ShortFade).StopAsync(TimeSpan.FromSeconds(2));
 
+        Assert.Equal(["level:1", "level:0.1", "level:0.01", "level:0", "pause", "level:1"], _controller.Calls);
+    }
+
+    // The host no longer sets a level; one arriving from an old caller must not reach the mixer.
+    [Fact]
+    public async Task SetVolumeAsync_Anything_LeavesTheMixerAlone()
+    {
+        _controller.Snapshot = Playing;
+        _controller.OnCommand = command => command == "pause" ? Paused : null;
+        var provider = Build(ShortFade);
+
+        await provider.SetVolumeAsync(0.15f);
         await provider.StopAsync(TimeSpan.FromSeconds(2));
 
-        Assert.Equal(["level:0.5", "level:0.05", "level:0.005", "level:0", "pause", "level:0.5"], _controller.Calls);
+        Assert.Equal(["level:1", "level:0.1", "level:0.01", "level:0", "pause", "level:1"], _controller.Calls);
+    }
+
+    // Windows puts the level it last kept for msedge.exe back onto every new audio session.
+    [Fact]
+    public void SessionChanged_SessionAppears_PushesFullLevel()
+    {
+        Build();
+
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+
+        Assert.Equal(["level:1"], _controller.Calls);
+    }
+
+    [Fact]
+    public void SessionChanged_SessionStillThere_DoesNotPushAgain()
+    {
+        Build();
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+
+        _controller.Snapshot = Playing with { Title = "Temptation" };
+        _controller.RaiseSessionChanged();
+
+        Assert.Equal(["level:1"], _controller.Calls);
+    }
+
+    // A restarted Edge is a new audio session, and the remembered level comes back with it.
+    [Fact]
+    public void SessionChanged_SessionComesBack_PushesFullLevelAgain()
+    {
+        Build();
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+
+        _controller.Snapshot = SessionSnapshot.None;
+        _clock.Advance(SessionTracker.TransientWindow + TimeSpan.FromSeconds(1));
+        _controller.RaiseSessionChanged();
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+
+        Assert.Equal(["level:1", "level:1"], _controller.Calls);
+    }
+
+    [Fact]
+    public void SessionChanged_ReadFails_IsNotTakenForTheSessionGoing()
+    {
+        Build();
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+
+        _controller.Snapshot = null;
+        _controller.RaiseSessionChanged();
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+
+        Assert.Equal(["level:1"], _controller.Calls);
+    }
+
+    // The session appearing as the audio does: the mixer may not have it yet.
+    [Fact]
+    public async Task SessionChanged_SessionAppearsBeforeItsAudio_RetriesUntilTheMixerTakesFullLevel()
+    {
+        Build();
+        _controller.CanSetLevel = false;
+        var retries = 0;
+        _onDelay = span =>
+        {
+            if (span == YouTubeMusicBreakMusicProvider.LevelRetry && ++retries == 2)
+                _controller.CanSetLevel = true;
+        };
+
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+        await UntilAsync(() => _controller.Calls.Count == 3);
+
+        Assert.Equal(["level:1", "level:1", "level:1"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task SessionChanged_MixerNeverTakesIt_GivesUpAfterTheRetries()
+    {
+        Build();
+        _controller.CanSetLevel = false;
+
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+        await UntilAsync(() => _controller.Calls.Count >= YouTubeMusicBreakMusicProvider.LevelRetryAttempts);
+        await Task.Delay(50);
+
+        Assert.Equal(YouTubeMusicBreakMusicProvider.LevelRetryAttempts, _controller.Calls.Count);
+    }
+
+    // A jump to full in the middle of a fade-out would put a burst of the bed under the singer.
+    [Fact]
+    public async Task SessionChanged_SessionAppearsDuringAFadeOut_LeavesTheFadeAlone()
+    {
+        _controller.Snapshot = Playing;
+        _controller.OnCommand = command => command == "pause" ? Paused : null;
+        var release = new TaskCompletionSource();
+        var seen = 0;
+        _holdDelay = (span, _) => span == FadeCurve.StepInterval && ++seen == 2 ? release.Task : null;
+        var provider = Build(ShortFade);
+
+        var pausing = provider.PauseAsync();
+        await UntilAsync(() => _controller.Calls.Count == 2);
+        _controller.RaiseSessionChanged();
+        release.SetResult();
+        await pausing;
+
+        Assert.Equal(["level:1", "level:0.1", "level:0.01", "level:0", "pause", "level:1"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task SessionChanged_SessionAppearsDuringTheFadeIn_LeavesTheRiseAlone()
+    {
+        _controller.Snapshot = Paused;
+        _controller.OnCommand = command => command == "play" ? Playing : null;
+        var release = new TaskCompletionSource();
+        var seen = 0;
+        _holdDelay = (span, _) => span == FadeCurve.StepInterval && ++seen == 2 ? release.Task : null;
+        var provider = Build(ShortFade);
+
+        await provider.ResumeAsync();
+        _controller.RaiseSessionChanged();
+        release.SetResult();
+        await UntilAsync(() => _controller.Calls.Count == 5);
+
+        Assert.Equal(["level:0", "play", "level:0.01", "level:0.1", "level:1"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task StartAsync_MixerNotReadyYet_RetriesFullLevelOnceTheStartIsDone()
+    {
+        _controller.Snapshot = Playing;
+        _controller.CanSetLevel = false;
+        var retry = new TaskCompletionSource();
+        _holdDelay = (span, _) => span == YouTubeMusicBreakMusicProvider.LevelRetry ? retry.Task : null;
+        var provider = Build();
+
+        Assert.True(await provider.StartAsync());
+        _controller.CanSetLevel = true;
+        retry.SetResult();
+        await UntilAsync(() => _controller.Calls.Count == 2);
+
+        Assert.Equal(["level:1", "level:1"], _controller.Calls);
     }
 
     [Fact]
@@ -261,18 +417,14 @@ public class YouTubeMusicBreakMusicProviderTests
     }
 
     [Fact]
-    public async Task PauseAsync_PlayingWithAFade_StepsDownThenPausesThenRestoresTheLevel()
+    public async Task PauseAsync_PlayingWithAFade_StepsDownThenPausesThenRestoresFullLevel()
     {
         _controller.Snapshot = Playing;
         _controller.OnCommand = command => command == "pause" ? Paused : null;
 
-        var provider = Build(ShortFade);
-        await provider.SetVolumeAsync(0.5f);
-        _controller.Calls.Clear();
+        await Build(ShortFade).PauseAsync();
 
-        await provider.PauseAsync();
-
-        Assert.Equal(["level:0.5", "level:0.05", "level:0.005", "level:0", "pause", "level:0.5"], _controller.Calls);
+        Assert.Equal(["level:1", "level:0.1", "level:0.01", "level:0", "pause", "level:1"], _controller.Calls);
     }
 
     [Fact]
@@ -310,16 +462,14 @@ public class YouTubeMusicBreakMusicProviderTests
 
     // Silent before play, so the room's first sound is the bottom of the rise, not a burst at full.
     [Fact]
-    public async Task ResumeAsync_WithAFade_SilencesThenPlaysThenStepsUpToTheLevel()
+    public async Task ResumeAsync_WithAFade_SilencesThenPlaysThenStepsUpToFullLevel()
     {
         _controller.Snapshot = Paused;
-        var provider = Build(ShortFade);
-        await provider.SetVolumeAsync(0.5f);
-        _controller.Calls.Clear();
 
-        await provider.ResumeAsync();
+        await Build(ShortFade).ResumeAsync();
+        await UntilAsync(() => _controller.Calls.Count == 5);
 
-        Assert.Equal(["level:0", "play", "level:0.005", "level:0.05", "level:0.5"], _controller.Calls);
+        Assert.Equal(["level:0", "play", "level:0.01", "level:0.1", "level:1"], _controller.Calls);
     }
 
     [Fact]
@@ -410,42 +560,7 @@ public class YouTubeMusicBreakMusicProviderTests
             _controller.Calls);
     }
 
-    [Fact]
-    public async Task SetVolumeAsync_DuringTheFadeIn_TheRiseEndsOnTheNewLevel()
-    {
-        _controller.Snapshot = Paused;
-        var release = new TaskCompletionSource();
-        var seen = 0;
-        _holdDelay = (span, _) => span == FadeCurve.StepInterval && ++seen == 2 ? release.Task : null;
-        var provider = Build(ShortFade);
-
-        await provider.ResumeAsync();
-        await provider.SetVolumeAsync(0.5f);
-        release.SetResult();
-        await UntilAsync(() => _controller.Calls.Count == 5);
-
-        Assert.Equal(["level:0", "play", "level:0.01", "level:0.05", "level:0.5"], _controller.Calls);
-    }
-
-    [Fact]
-    public async Task SetVolumeAsync_DuringTheFadeOut_IsWhatThePauseRestores()
-    {
-        _controller.Snapshot = Playing;
-        _controller.OnCommand = command => command == "pause" ? Paused : null;
-        var release = new TaskCompletionSource();
-        var seen = 0;
-        _holdDelay = (span, _) => span == FadeCurve.StepInterval && ++seen == 2 ? release.Task : null;
-        var provider = Build(ShortFade);
-
-        var pausing = provider.PauseAsync();
-        await UntilAsync(() => _controller.Calls.Count == 2);
-        await provider.SetVolumeAsync(0.5f);
-        release.SetResult();
-        await pausing;
-
-        Assert.Equal(["level:1", "level:0.1", "level:0.01", "level:0", "pause", "level:0.5"], _controller.Calls);
-    }
-
+    // The level the first read of the session pushes follows the commands; it is not one of them.
     [Fact]
     public async Task SkipAsync_FromPause_SkipsThenPlays()
     {
@@ -455,7 +570,7 @@ public class YouTubeMusicBreakMusicProviderTests
         var provider = Build();
         await provider.SkipAsync();
 
-        Assert.Equal(["skip", "play"], _controller.Calls);
+        Assert.Equal(["skip", "play", "level:1"], _controller.Calls);
         Assert.Equal("Temptation", provider.CurrentTrack!.Title);
     }
 
@@ -467,18 +582,7 @@ public class YouTubeMusicBreakMusicProviderTests
 
         await Build().SkipAsync();
 
-        Assert.Equal(["skip"], _controller.Calls);
-    }
-
-    [Fact]
-    public async Task SetVolumeAsync_OutOfRange_IsClampedOntoTheMixer()
-    {
-        var provider = Build();
-
-        await provider.SetVolumeAsync(1.7f);
-        await provider.SetVolumeAsync(0.25f);
-
-        Assert.Equal(["level:1", "level:0.25"], _controller.Calls);
+        Assert.Equal(["skip", "level:1"], _controller.Calls);
     }
 
     [Fact]
@@ -528,7 +632,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = Paused;
         _controller.RaiseSessionChanged();
 
-        Assert.Equal(["play"], _controller.Calls);
+        Assert.Equal(["level:1", "play"], _controller.Calls);
     }
 
     [Fact]
@@ -541,7 +645,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = Paused;
         _controller.RaiseSessionChanged();
 
-        Assert.Empty(_controller.Calls);
+        Assert.Equal(["level:1"], _controller.Calls);
     }
 
     [Fact]
@@ -555,7 +659,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = Paused;
         _controller.RaiseSessionChanged();
 
-        Assert.Equal(["pause"], _controller.Calls);
+        Assert.Equal(["level:1", "pause"], _controller.Calls);
     }
 
     // The host stopping the bed for a singer during the grace has the last word over the recovery.
@@ -575,7 +679,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = Paused;
         _controller.RaiseSessionChanged();
 
-        Assert.Equal(["pause"], _controller.Calls);
+        Assert.Equal(["level:1", "pause"], _controller.Calls);
     }
 
     [Fact]
