@@ -793,6 +793,112 @@ public class YouTubeMusicBreakMusicProviderTests
         Assert.True(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
     }
 
+    // Installing the app from Edge's own address bar raises nothing the plugin can hear.
+    [Fact]
+    public void SetupStatusPoll_AppInstalledOutOfBand_RedrawsThePluginsRow()
+    {
+        _controller.Status = SetupStatus.AppNotInstalled;
+        var provider = Build();
+
+        _controller.Status = SetupStatus.Ready;
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
+
+        _broker.Received(1).Announce(Arg.Any<PluginsChanged>());
+        Assert.True(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
+    }
+
+    [Fact]
+    public void SetupStatusPoll_BeforeItsInterval_HasNotLookedYet()
+    {
+        _controller.Status = SetupStatus.AppNotInstalled;
+        Build();
+
+        _controller.Status = SetupStatus.Ready;
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll - TimeSpan.FromMilliseconds(1));
+
+        _broker.DidNotReceive().Announce(Arg.Any<PluginsChanged>());
+    }
+
+    [Fact]
+    public void SetupStatusPoll_NothingMoved_AnnouncesNothing()
+    {
+        Build();
+
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
+
+        _broker.DidNotReceive().Announce(Arg.Any<PluginsChanged>());
+    }
+
+    [Fact]
+    public void SetupStatusPoll_KeepsLooking_AfterTheFirstChange()
+    {
+        _controller.Status = SetupStatus.AppNotInstalled;
+        Build();
+
+        _controller.Status = SetupStatus.Ready;
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
+        _controller.Status = SetupStatus.AppNotInstalled;
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
+
+        _broker.Received(2).Announce(Arg.Any<PluginsChanged>());
+    }
+
+    // The warning was decided once at construction; an app removed later went unreported.
+    [Fact]
+    public void SetupStatusPoll_AppRemovedLater_WarnsThen()
+    {
+        _controller.NotSetUpWarning = "Press setup; Edge opens.";
+        Build();
+        _context.DidNotReceive().ReportWarning("Press setup; Edge opens.");
+
+        _controller.Status = SetupStatus.AppNotInstalled;
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
+
+        _context.Received(1).ReportWarning("Press setup; Edge opens.");
+    }
+
+    [Fact]
+    public void SetupStatusPoll_AppInstalled_DoesNotWarnAgain()
+    {
+        _controller.Status = SetupStatus.AppNotInstalled;
+        _controller.NotSetUpWarning = "Press setup; Edge opens.";
+        Build();
+
+        _controller.Status = SetupStatus.Ready;
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
+
+        _context.Received(1).ReportWarning("Press setup; Edge opens.");
+    }
+
+    [Fact]
+    public void SetupStatusPoll_ControllerThrows_KeepsPolling()
+    {
+        _controller.Status = SetupStatus.AppNotInstalled;
+        Build();
+
+        _controller.StatusThrows = true;
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
+        _controller.StatusThrows = false;
+        _controller.Status = SetupStatus.Ready;
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
+
+        _broker.Received(1).Announce(Arg.Any<PluginsChanged>());
+    }
+
+    [Fact]
+    public void Dispose_StopsThePoll()
+    {
+        _controller.Status = SetupStatus.AppNotInstalled;
+        var provider = Build();
+
+        provider.Dispose();
+        _controller.Status = SetupStatus.Ready;
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
+
+        _broker.DidNotReceive().Announce(Arg.Any<PluginsChanged>());
+    }
+
     [Fact]
     public async Task InvokeButtonAsync_UnknownKey_DoesNothing()
     {

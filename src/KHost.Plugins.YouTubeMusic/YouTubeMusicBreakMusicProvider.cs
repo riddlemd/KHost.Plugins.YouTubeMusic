@@ -12,7 +12,7 @@ namespace KHost.Plugins.YouTubeMusic;
 /// <summary>Break music out of YouTube Music on this machine: the app installed in Edge on Windows,
 /// KHost's own YouTube Music app on macOS. The host carries none of this audio, so nothing here
 /// reaches a screen or a Cast device.</summary>
-public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPluginButtonHandler
+public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPluginButtonHandler, IDisposable
 {
     internal const string SetupButton = "setup";
     internal const string OpenButton = "open";
@@ -45,9 +45,15 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     private static readonly TimeSpan SetupStatusLifetime = TimeSpan.FromSeconds(5);
 
+    /// <summary>The app is installed in Edge (or signed in on macOS) out of band, and nothing raises
+    /// an event for it. Each check is a folder test, or one read of Edge's Preferences while the app
+    /// is missing.</summary>
+    internal static readonly TimeSpan SetupStatusPoll = TimeSpan.FromSeconds(5);
+
     internal const string SignedOutMessage = "YouTube Music: signed out — press Set up to sign in again";
 
     private readonly ILogger<YouTubeMusicBreakMusicProvider> _logger;
+    private readonly IPluginContext _context;
     private readonly IMessageBroker? _broker;
     private readonly IFlashService? _flash;
     private readonly IYouTubeMusicController _controller;
@@ -77,7 +83,14 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     /// <summary>The last level the mixer took; NaN until it has taken one.</summary>
     private float _applied = float.NaN;
 
+    private readonly object _statusSync = new();
     private (SetupStatus Status, DateTimeOffset ReadAt)? _setupStatus;
+
+    /// <summary>The last status read, kept apart from the cache so forgetting that is not a change.</summary>
+    private SetupStatus? _knownStatus;
+
+    /// <summary>Held for the provider's life: a collected timer stops firing.</summary>
+    private ITimer? _setupStatusTimer;
 
     public YouTubeMusicBreakMusicProvider(
         ILogger<YouTubeMusicBreakMusicProvider> logger, IPluginContext context, IMessageBroker broker,
@@ -97,6 +110,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         string? binDirectory = null)
     {
         _logger = logger;
+        _context = context;
         _broker = broker;
         _flash = flashService;
         _time = time ?? TimeProvider.System;
@@ -125,8 +139,9 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
             return;
         }
 
-        if (SetupStatusNow() is SetupStatus.AppNotInstalled or SetupStatus.NotSignedIn)
-            context.ReportWarning(_controller.NotSetUpWarning);
+        // The first read warns when setup is unfinished; every later move is noticed the same way.
+        SetupStatusNow();
+        _setupStatusTimer = _time.CreateTimer(_ => PollSetupStatus(), null, SetupStatusPoll, SetupStatusPoll);
 
         _controller.SessionChanged += (_, _) => _ = RefreshAsync();
 
@@ -305,7 +320,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 return;
         }
 
-        _setupStatus = null;
+        ForgetSetupStatus();
     }
 
     public PluginButtonState DescribeButton(string key)
@@ -330,20 +345,65 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         };
     }
 
+    public void Dispose() => _setupStatusTimer?.Dispose();
+
     private static bool CanPlay(SetupStatus status) => status is SetupStatus.Ready or SetupStatus.NotSignedIn;
 
     /// <summary>Cached briefly: the row is redrawn often, and the check reads the profile's files.</summary>
     private SetupStatus SetupStatusNow()
     {
-        var now = _time.GetUtcNow();
+        SetupStatus status;
+        SetupStatus? before;
 
-        if (_setupStatus is { } cached && now - cached.ReadAt < SetupStatusLifetime)
-            return cached.Status;
+        lock (_statusSync)
+        {
+            var now = _time.GetUtcNow();
 
-        var status = _controller.GetSetupStatus();
-        _setupStatus = (status, now);
+            if (_setupStatus is { } cached && now - cached.ReadAt < SetupStatusLifetime)
+                return cached.Status;
+
+            status = _controller.GetSetupStatus();
+            _setupStatus = (status, now);
+            before = _knownStatus;
+            _knownStatus = status;
+        }
+
+        if (before != status)
+            OnSetupStatusMoved(before, status);
 
         return status;
+    }
+
+    private void ForgetSetupStatus()
+    {
+        lock (_statusSync)
+            _setupStatus = null;
+    }
+
+    private void PollSetupStatus()
+    {
+        try
+        {
+            ForgetSetupStatus();
+            SetupStatusNow();
+        }
+        catch (Exception ex)
+        {
+            // A timer callback that throws takes the host down with it.
+            _logger.LogDebug(ex, "Could not re-read YouTube Music's setup");
+        }
+    }
+
+    /// <summary>A warning cannot be withdrawn, so only a move into an unfinished setup is reported;
+    /// the row's buttons are what show it finished.</summary>
+    private void OnSetupStatusMoved(SetupStatus? before, SetupStatus status)
+    {
+        if (status is SetupStatus.AppNotInstalled or SetupStatus.NotSignedIn)
+            _context.ReportWarning(_controller.NotSetUpWarning);
+
+        // The Plugins page re-reads DescribeButton only when it redraws, and this is what redraws it.
+        if (before is not null)
+            _broker?.Announce(new PluginsChanged());
     }
 
     private async Task<bool> LaunchAndPlayAsync(CancellationToken rampToken, CancellationToken cancellationToken)
@@ -696,7 +756,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
 
         if (_signIn.SignedIn != before)
-            _setupStatus = null;
+            ForgetSetupStatus();
     }
 
     /// <summary>YouTube Music pauses on its own after a long stretch with nobody touching the page,
