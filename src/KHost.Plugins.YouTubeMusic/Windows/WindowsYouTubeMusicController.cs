@@ -128,7 +128,20 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
     }
 
     public Task<bool> LaunchAppAsync(string? startUrl, CancellationToken cancellationToken = default)
-        => Task.FromResult(Launch(EdgeArguments.ForApp(_profileDirectory, startUrl)));
+    {
+        var before = ForegroundWindow.Current();
+        var launched = Launch(EdgeArguments.ForApp(_profileDirectory, startUrl));
+
+        // Not awaited: the start goes on to wait for the session while the window comes up.
+        if (launched)
+            _ = HandForegroundBackAsync(before);
+
+        return Task.FromResult(launched);
+    }
+
+    /// <summary>Overridden so the window the host asked to see is not sent behind again.</summary>
+    public Task<bool> ShowAppAsync(CancellationToken cancellationToken = default)
+        => Task.FromResult(Launch(EdgeArguments.ForApp(_profileDirectory, startUrl: null)));
 
     public Task<bool> OpenSetupAsync(CancellationToken cancellationToken = default)
         => Task.FromResult(Launch(EdgeArguments.ForSetup(_profileDirectory)));
@@ -251,6 +264,26 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
         {
             _logger.LogWarning(ex, "Could not start Microsoft Edge at {Path}", _edgePath);
             return false;
+        }
+    }
+
+    private async Task HandForegroundBackAsync(nint before)
+    {
+        try
+        {
+            var handedBack = await ForegroundReturn.HandBackAsync(
+                before,
+                ForegroundWindow.Current,
+                window => ForegroundWindow.BelongsToProcess(window, "msedge"),
+                ForegroundWindow.BringToFront,
+                (span, token) => Task.Delay(span, _time, token));
+
+            if (handedBack)
+                _logger.LogDebug("Gave the foreground back after the YouTube Music window took it");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not give the foreground back after opening YouTube Music");
         }
     }
 
