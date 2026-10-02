@@ -46,7 +46,9 @@ public sealed class FakeYouTubeMusicController : IYouTubeMusicController
     public Task<SessionSnapshot?> ReadAsync(CancellationToken cancellationToken = default)
         => Task.FromResult(QueuedSnapshots.Count > 0 ? QueuedSnapshots.Dequeue() : Snapshot);
 
-    public SetupStatus GetSetupStatus() => Status;
+    public bool StatusThrows { get; set; }
+
+    public SetupStatus GetSetupStatus() => StatusThrows ? throw new IOException("Preferences locked") : Status;
 
     public Task<bool> LaunchAppAsync(string? startUrl, CancellationToken cancellationToken = default)
         => Command($"launch:{startUrl}");
@@ -74,12 +76,83 @@ public sealed class FakeYouTubeMusicController : IYouTubeMusicController
     }
 }
 
-/// <summary>A clock that moves only when told, so every window is exact.</summary>
+/// <summary>A clock that moves only when told, so every window is exact. Its timers fire inside
+/// <see cref="Advance"/>, on the caller's thread, for every period the advance carries past.</summary>
 public sealed class ManualClock : TimeProvider
 {
+    private readonly List<ManualTimer> _timers = [];
+
     public DateTimeOffset Now { get; set; } = new(2026, 10, 1, 20, 0, 0, TimeSpan.Zero);
 
     public override DateTimeOffset GetUtcNow() => Now;
 
-    public void Advance(TimeSpan span) => Now += span;
+    public void Advance(TimeSpan span)
+    {
+        Now += span;
+
+        ManualTimer[] timers;
+
+        lock (_timers)
+            timers = [.. _timers];
+
+        foreach (var timer in timers)
+            timer.FireDue(Now);
+    }
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        var timer = new ManualTimer(this, callback, state);
+        timer.Change(dueTime, period);
+
+        lock (_timers)
+            _timers.Add(timer);
+
+        return timer;
+    }
+
+    private sealed class ManualTimer(ManualClock clock, TimerCallback callback, object? state) : ITimer
+    {
+        private readonly object _sync = new();
+        private DateTimeOffset? _next;
+        private TimeSpan _period;
+
+        public bool Change(TimeSpan dueTime, TimeSpan period)
+        {
+            lock (_sync)
+            {
+                _next = dueTime == Timeout.InfiniteTimeSpan ? null : clock.Now + dueTime;
+                _period = period;
+            }
+
+            return true;
+        }
+
+        public void FireDue(DateTimeOffset now)
+        {
+            while (true)
+            {
+                lock (_sync)
+                {
+                    if (_next is not { } next || next > now)
+                        return;
+
+                    _next = _period > TimeSpan.Zero && _period != Timeout.InfiniteTimeSpan ? next + _period : null;
+                }
+
+                callback(state);
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_sync)
+                _next = null;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
 }

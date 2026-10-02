@@ -109,7 +109,7 @@ public static class HelperInstaller
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         var files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
-            .Where(path => Path.GetFileName(path) != FinderCustomIconFile)
+            .Where(CountsTowardHash)
             .Select(path => (Path: path, Relative: Path.GetRelativePath(root, path).Replace('\\', '/')))
             .OrderBy(file => file.Relative, StringComparer.Ordinal);
 
@@ -123,6 +123,9 @@ public static class HelperInstaller
 
         return Convert.ToHexStringLower(hash.GetHashAndReset());
     }
+
+    /// <summary>Asked of the name alone, so the rule is checked where no filesystem can hold the file.</summary>
+    internal static bool CountsTowardHash(string path) => Path.GetFileName(path) != FinderCustomIconFile;
 
     private static void CopyTree(string source, string destination)
     {
