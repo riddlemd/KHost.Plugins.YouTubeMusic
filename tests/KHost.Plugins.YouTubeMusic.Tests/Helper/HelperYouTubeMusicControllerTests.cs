@@ -75,6 +75,36 @@ public sealed class HelperYouTubeMusicControllerTests : IAsyncDisposable
         Assert.Equal(SetupStatus.NotSignedIn, controller.GetSetupStatus());
     }
 
+    // A sign-in run in the player leaves music.youtube.com and comes back to the home page with nothing
+    // loaded: the sign-in is the only thing that moved, and the provider must still hear it.
+    [Fact]
+    public async Task PollOnceAsync_BackFromSignInOnTheHomePage_IsReadyAndRaisesSessionChanged()
+    {
+        var helper = NewHelper();
+        helper.State = """{"page":false,"url":"https://myaccount.google.com/"}""";
+        _transport.Existing = helper.Connection;
+        var controller = Build();
+        await controller.PollOnceAsync(CancellationToken.None);
+        Assert.Equal(SetupStatus.NotSignedIn, controller.GetSetupStatus());
+        var raised = 0;
+        controller.SessionChanged += (_, _) => raised++;
+
+        helper.State = """{"page":true,"state":-1,"title":"","signedIn":true}""";
+        await controller.PollOnceAsync(CancellationToken.None);
+
+        Assert.Equal(SetupStatus.Ready, controller.GetSetupStatus());
+        Assert.Equal(1, raised);
+    }
+
+    [Fact]
+    public void NotSetUpWarning_NamesTheSignInButtonMacOSShows()
+    {
+        var warning = Build().NotSetUpWarning;
+
+        Assert.Contains("\"Sign in to YouTube Music\"", warning);
+        Assert.DoesNotContain("Set up YouTube Music", warning);
+    }
+
     // Still up but silent is "could not look", which the provider treats differently from "nothing there".
     [Fact]
     public async Task ReadAsync_PageCannotBeRead_IsNull()

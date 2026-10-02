@@ -22,6 +22,13 @@ public enum SetupStatus
     NotSignedIn,
 }
 
+/// <summary>Setup button labels that other text names, so the instruction and the button cannot drift apart.</summary>
+internal static class SetupButtonLabel
+{
+    /// <summary>The setup button while <see cref="SetupStatus.NotSignedIn"/> (macOS only).</summary>
+    public const string SignIn = "Sign in to YouTube Music";
+}
+
 /// <summary>Drives the YouTube Music app on this machine. Reports raw session reads; deciding what
 /// they mean (skip transients, adverts, unasked pauses) is <see cref="SessionTracker"/>'s.</summary>
 public interface IYouTubeMusicController
@@ -37,7 +44,7 @@ public interface IYouTubeMusicController
     string BrowserShortName { get; }
 
     /// <summary>What the Plugins page says while <see cref="GetSetupStatus"/> is
-    /// <see cref="SetupStatus.AppNotInstalled"/>.</summary>
+    /// <see cref="SetupStatus.AppNotInstalled"/> or <see cref="SetupStatus.NotSignedIn"/>.</summary>
     string NotSetUpWarning { get; }
 
     /// <summary>Raised when the session may have moved. Carries nothing: read it back.</summary>

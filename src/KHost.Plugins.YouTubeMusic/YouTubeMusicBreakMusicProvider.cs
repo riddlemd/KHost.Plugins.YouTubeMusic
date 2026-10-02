@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using KHost.Abstractions.Exceptions;
 using KHost.Abstractions.Messaging;
 using KHost.Abstractions.Messaging.Messages;
@@ -39,9 +40,11 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     private static readonly TimeSpan SetupStatusLifetime = TimeSpan.FromSeconds(5);
 
-    internal const string SignedOutMessage = "YouTube Music: signed out — press Set up to sign in again";
+    /// <summary>Only the macOS app reports a sign-in, so this names the button macOS shows signed out.</summary>
+    internal const string SignedOutMessage = $"YouTube Music: signed out — press \"{SetupButtonLabel.SignIn}\" on the Plugins page";
 
     private readonly ILogger<YouTubeMusicBreakMusicProvider> _logger;
+    private readonly IPluginContext _context;
     private readonly IMessageBroker? _broker;
     private readonly IFlashService? _flash;
     private readonly IYouTubeMusicController _controller;
@@ -59,6 +62,9 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     private readonly SemaphoreSlim _levelGate = new(1, 1);
     private readonly object _rampSync = new();
     private CancellationTokenSource _rampCancel = new();
+
+    /// <summary>The row's "not signed in" line, cleared once the page reports a sign-in; 0 when there is none.</summary>
+    private int _notSetUpWarning;
     private Task _fadeIn = Task.CompletedTask;
 
     /// <summary>Operations holding or waiting for the level, plus a running fade-in. While above zero
@@ -93,6 +99,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         string? binDirectory = null)
     {
         _logger = logger;
+        _context = context;
         _broker = broker;
         _flash = flashService;
         _time = time ?? TimeProvider.System;
@@ -110,19 +117,19 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
         if (!string.IsNullOrWhiteSpace(settings.PlaylistUrl) && _startUrl is null)
         {
-            context.ReportWarning(
+            AddWarning(
                 $"'{settings.PlaylistUrl}' is not a YouTube Music playlist link, so break music will "
                 + "resume whatever the app already has loaded instead.");
         }
 
         if (_controller.Unavailable is { } reason)
         {
-            context.ReportWarning(reason);
+            AddWarning(reason);
             return;
         }
 
         if (SetupStatusNow() is SetupStatus.AppNotInstalled or SetupStatus.NotSignedIn)
-            context.ReportWarning(_controller.NotSetUpWarning);
+            _notSetUpWarning = AddWarning(_controller.NotSetUpWarning);
 
         _controller.SessionChanged += (_, _) => _ = RefreshAsync();
 
@@ -326,7 +333,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 SetupStatus.Ready => new PluginButtonState { Label = "Set up YouTube Music again" },
 
                 // Plays already, signed out and so with adverts; signing in is the rest of setup.
-                SetupStatus.NotSignedIn => new PluginButtonState { Label = "Sign in to YouTube Music" },
+                SetupStatus.NotSignedIn => new PluginButtonState { Label = SetupButtonLabel.SignIn },
                 _ => PluginButtonState.Default,
             },
             OpenButton => new PluginButtonState { Visible = CanPlay(status) },
@@ -692,8 +699,52 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
 
         if (_signIn.SignedIn != before)
+        {
             _setupStatus = null;
+
+            if (_signIn.SignedIn == true && _notSetUpWarning != 0)
+            {
+                ClearWarning(_notSetUpWarning);
+                _notSetUpWarning = 0;
+            }
+        }
     }
+
+    /// <returns>The warning's id, or 0 on a host too old to clear one (contracts before 0.45).</returns>
+    private int AddWarning(string message)
+    {
+        try
+        {
+            return AddWarningOnThisHost(message);
+        }
+        catch (MissingMethodException)
+        {
+#pragma warning disable CS0618 // The only way an older host shows a warning.
+            _context.ReportWarning(message);
+#pragma warning restore CS0618
+            return 0;
+        }
+    }
+
+    private void ClearWarning(int id)
+    {
+        try
+        {
+            ClearWarningOnThisHost(id);
+        }
+        catch (MissingMethodException)
+        {
+            // Unreachable in practice: an id only comes from a host that has AddWarning.
+        }
+    }
+
+    // Each its own method so a host without the member fails at this call, where the caller catches
+    // it: inside the caller the JIT would throw before the caller's first line ran.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private int AddWarningOnThisHost(string message) => _context.AddWarning(message);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ClearWarningOnThisHost(int id) => _context.ClearWarning(id);
 
     /// <summary>YouTube Music pauses on its own after a long stretch with nobody touching the page,
     /// behind "Are you still there?". Nothing outside the page can answer the prompt; pressing play

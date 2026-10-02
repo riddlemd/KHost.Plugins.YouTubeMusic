@@ -53,7 +53,7 @@ internal sealed class HelperYouTubeMusicController : IYouTubeMusicController
     public string BrowserShortName => "YouTube Music app";
 
     public string NotSetUpWarning =>
-        "YouTube Music is not signed in yet. Press \"Set up YouTube Music\" and sign in in the YouTube Music window; "
+        $"YouTube Music is not signed in yet. Press \"{SetupButtonLabel.SignIn}\" and sign in in the YouTube Music window; "
         + "until then it plays signed out, with adverts.";
 
     public bool IsBrowserRunning => _connection is { IsOpen: true } || _transport.IsRunning;
