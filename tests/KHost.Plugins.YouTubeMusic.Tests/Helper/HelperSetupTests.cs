@@ -15,9 +15,13 @@ public class HelperSetupTests
     public void StatusFor_MapsAppSignInAndStore(bool app, bool? signedIn, bool store, SetupStatus expected)
         => Assert.Equal(expected, HelperSetup.StatusFor(app, signedIn, store));
 
+    // Separators compared as one: the path is only ever used on macOS, but Path.Combine joins with
+    // the running platform's, and the suite runs on Windows too.
     [Fact]
     public void SocketPath_UnderTheAppsOwnCachesFolder()
-        => Assert.Equal("/Users/a/Library/Caches/com.khost.youtube-music-helper/khost.sock", HelperApp.SocketPath("/Users/a"));
+        => Assert.Equal(
+            "/Users/a/Library/Caches/com.khost.youtube-music-helper/khost.sock",
+            HelperApp.SocketPath("/Users/a")?.Replace('\\', '/'));
 
     // sockaddr_un: 104 bytes with the terminator. Longer and bind() fails, so there is no socket.
     [Fact]
