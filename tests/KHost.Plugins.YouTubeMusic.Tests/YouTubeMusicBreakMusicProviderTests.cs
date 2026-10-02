@@ -799,6 +799,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Status = SetupStatus.AppNotInstalled;
         var provider = Build();
+        _broker.ClearReceivedCalls();
 
         _controller.Status = SetupStatus.Ready;
         _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
@@ -813,6 +814,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Status = SetupStatus.AppNotInstalled;
         var provider = Build();
+        _broker.ClearReceivedCalls();
         _clock.Advance(TimeSpan.FromSeconds(3));
         await provider.InvokeButtonAsync(YouTubeMusicBreakMusicProvider.SetupButton);
         provider.DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton);
@@ -828,6 +830,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Status = SetupStatus.AppNotInstalled;
         Build();
+        _broker.ClearReceivedCalls();
 
         _controller.Status = SetupStatus.Ready;
         _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll - TimeSpan.FromMilliseconds(1));
@@ -851,6 +854,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Status = SetupStatus.AppNotInstalled;
         Build();
+        _broker.ClearReceivedCalls();
 
         _controller.Status = SetupStatus.Ready;
         _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
@@ -892,6 +896,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Status = SetupStatus.AppNotInstalled;
         Build();
+        _broker.ClearReceivedCalls();
 
         _controller.StatusThrows = true;
         _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll);
@@ -907,6 +912,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Status = SetupStatus.AppNotInstalled;
         var provider = Build();
+        _broker.ClearReceivedCalls();
 
         provider.Dispose();
         _controller.Status = SetupStatus.Ready;
