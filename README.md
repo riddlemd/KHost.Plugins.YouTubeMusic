@@ -25,8 +25,11 @@ shared.
   plain `MSEdge` tab. Play, pause and next are sent to that session alone, unlike media keys,
   which go to whatever app has focus. Title and artist come from the same session.
 - **Volume and fades** go through the Windows volume mixer (Core Audio, built-in COM interop, no
-  package). The plugin sets the level of its own profile's Edge audio-service process. The venue
-  volume lands there. Fades are described under [Fades](#fades).
+  package). The plugin sets the level of its own profile's Edge audio-service process. The host
+  sets no level of its own, since every output runs through the room's mixer, so the app plays at
+  full. Windows puts back whatever level it last kept for `msedge.exe` on each new audio session, so
+  the plugin pushes full level whenever the app's media session appears. Fades are described under
+  [Fades](#fades).
 - **Playlist.** Paste a YouTube Music (or YouTube) playlist link. It is used only when the app
   has nothing loaded, because the plugin then opens the app straight at that list. After a singer
   the bed resumes where it stopped and is never restarted from the top. A single-track link is
@@ -91,17 +94,17 @@ Every fade runs on one equal-decibel curve, a step every 100ms, over the *Fade l
 the plugin applies its own setting to all of them.
 
 - **Pause, and stop when a singer starts:** the level steps down to silence, the app pauses, and
-  the venue level is put back so the next start is not silent. A cancelled fade still pauses and
+  full level is put back so the next start is not silent. A cancelled fade still pauses and
   restores.
 - **Start and resume:** the level is set to silence *before* play, play is pressed, then it steps
-  up to the venue level. A fresh launch starts sounding on its own, so it is cut to silence the
-  moment it is heard and rises from there. A refused play puts the venue level back before the
-  error reaches the host. Where the mixer has nothing to hold yet (Edge before its first sound),
-  it plays at the venue level with no rise.
+  up to full. A fresh launch starts sounding on its own, so it is cut to silence the moment it is
+  heard and rises from there. A refused play puts full level back before the error reaches the
+  host. Where the mixer has nothing to hold yet (Edge before its first sound), it plays with no
+  rise, and full level is retried each second until the mixer has the session.
 - **The rise does not hold the host:** start and resume return once play is pressed. A pause
   during the rise cuts it short and fades down from wherever it got; a resume during a fade-out
-  lets the pause land, then rises from silence. One fade runs at a time. A venue volume change
-  during a fade is where that fade ends (or what the pause restores).
+  lets the pause land, then rises from silence. One fade runs at a time, and the full-level push
+  when the session appears stands aside for it.
 - **"Are you still there?" recovery is not faded**: the level was never lowered, so play is
   pressed at it, as before.
 

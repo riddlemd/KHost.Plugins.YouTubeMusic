@@ -23,6 +23,8 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
     private readonly ILogger _logger;
     private readonly string _profileDirectory;
     private readonly string? _edgePath;
+    private readonly TimeProvider _time;
+    private readonly SessionSightings _sightings = new();
 
     /// <summary>Held for the controller's life: a collected manager raises nothing.</summary>
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
@@ -30,10 +32,11 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
     private HashSet<int> _audioProcessIds = [];
     private int _raiseGeneration;
 
-    public WindowsYouTubeMusicController(ILogger logger, string profileDirectory)
+    public WindowsYouTubeMusicController(ILogger logger, string profileDirectory, TimeProvider? time = null)
     {
         _logger = logger;
         _profileDirectory = profileDirectory;
+        _time = time ?? TimeProvider.System;
         _edgePath = EdgeLocator.Find(
             EdgeLocator.Candidates(
                 ReadAppPathsEntry(),
@@ -125,7 +128,20 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
     }
 
     public Task<bool> LaunchAppAsync(string? startUrl, CancellationToken cancellationToken = default)
-        => Task.FromResult(Launch(EdgeArguments.ForApp(_profileDirectory, startUrl)));
+    {
+        var before = ForegroundWindow.Current();
+        var launched = Launch(EdgeArguments.ForApp(_profileDirectory, startUrl));
+
+        // Not awaited: the start goes on to wait for the session while the window comes up.
+        if (launched)
+            _ = HandForegroundBackAsync(before);
+
+        return Task.FromResult(launched);
+    }
+
+    /// <summary>Overridden so the window the host asked to see is not sent behind again.</summary>
+    public Task<bool> ShowAppAsync(CancellationToken cancellationToken = default)
+        => Task.FromResult(Launch(EdgeArguments.ForApp(_profileDirectory, startUrl: null)));
 
     public Task<bool> OpenSetupAsync(CancellationToken cancellationToken = default)
         => Task.FromResult(Launch(EdgeArguments.ForSetup(_profileDirectory)));
@@ -175,11 +191,16 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
 
             if (!ReferenceEquals(session, _watched))
             {
+                if (_watched is not null)
+                    _sightings.NoteLost(_time.GetUtcNow());
+
                 _watched = session;
 
                 if (session is not null)
                 {
-                    _logger.LogInformation("Found YouTube Music's media session ({AppId})", session.SourceAppUserModelId);
+                    _logger.Log(
+                        _sightings.NoteFound(_time.GetUtcNow()),
+                        "Found YouTube Music's media session ({AppId})", session.SourceAppUserModelId);
                     session.PlaybackInfoChanged += (_, _) => RaiseCoalesced();
                     session.MediaPropertiesChanged += (_, _) => RaiseCoalesced();
                 }
@@ -216,12 +237,26 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
         {
             Directory.CreateDirectory(_profileDirectory);
 
-            var start = new ProcessStartInfo(_edgePath) { UseShellExecute = false };
+            var start = new ProcessStartInfo(_edgePath)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
 
             foreach (var argument in arguments)
                 start.ArgumentList.Add(argument);
 
-            Process.Start(start)?.Dispose();
+            var process = Process.Start(start);
+
+            if (process is not null)
+            {
+                // Both drained: a redirected pipe nobody reads fills and stalls Edge's writes.
+                _ = Task.WhenAll(
+                        EdgeOutput.DrainAsync(process.StandardOutput, _logger, "stdout"),
+                        EdgeOutput.DrainAsync(process.StandardError, _logger, "stderr"))
+                    .ContinueWith(_ => process.Dispose(), TaskScheduler.Default);
+            }
 
             return true;
         }
@@ -229,6 +264,26 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
         {
             _logger.LogWarning(ex, "Could not start Microsoft Edge at {Path}", _edgePath);
             return false;
+        }
+    }
+
+    private async Task HandForegroundBackAsync(nint before)
+    {
+        try
+        {
+            var handedBack = await ForegroundReturn.HandBackAsync(
+                before,
+                ForegroundWindow.Current,
+                window => ForegroundWindow.BelongsToProcess(window, "msedge"),
+                ForegroundWindow.BringToFront,
+                (span, token) => Task.Delay(span, _time, token));
+
+            if (handedBack)
+                _logger.LogDebug("Gave the foreground back after the YouTube Music window took it");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not give the foreground back after opening YouTube Music");
         }
     }
 

@@ -12,7 +12,7 @@ namespace KHost.Plugins.YouTubeMusic;
 /// <summary>Break music out of YouTube Music on this machine: the app installed in Edge on Windows,
 /// KHost's own YouTube Music app on macOS. The host carries none of this audio, so nothing here
 /// reaches a screen or a Cast device.</summary>
-public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPluginButtonHandler
+public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPluginButtonHandler, IDisposable
 {
     internal const string SetupButton = "setup";
     internal const string OpenButton = "open";
@@ -34,14 +34,26 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     private static readonly TimeSpan PausedPoll = TimeSpan.FromMilliseconds(50);
     private const int PausedPollAttempts = 6;
 
-    /// <summary>The audio session appears only once the app first makes a sound.</summary>
-    private static readonly TimeSpan LevelRetry = TimeSpan.FromSeconds(1);
+    /// <summary>The audio session appears only once the app first makes a sound, and a cold Edge
+    /// start can take several seconds past the media session to make one.</summary>
+    internal static readonly TimeSpan LevelRetry = TimeSpan.FromSeconds(1);
+    internal const int LevelRetryAttempts = 10;
+
+    /// <summary>The host sets no level of its own: every output runs through the room's mixer, so
+    /// the app always plays at full and only the fades move it.</summary>
+    internal const float FullLevel = 1f;
 
     private static readonly TimeSpan SetupStatusLifetime = TimeSpan.FromSeconds(5);
+
+    /// <summary>The app is installed in Edge (or signed in on macOS) out of band, and nothing raises
+    /// an event for it. Each check is a folder test, or one read of Edge's Preferences while the app
+    /// is missing.</summary>
+    internal static readonly TimeSpan SetupStatusPoll = TimeSpan.FromSeconds(5);
 
     internal const string SignedOutMessage = "YouTube Music: signed out — press Set up to sign in again";
 
     private readonly ILogger<YouTubeMusicBreakMusicProvider> _logger;
+    private readonly IPluginContext _context;
     private readonly IMessageBroker? _broker;
     private readonly IFlashService? _flash;
     private readonly IYouTubeMusicController _controller;
@@ -61,11 +73,9 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     private CancellationTokenSource _rampCancel = new();
     private Task _fadeIn = Task.CompletedTask;
 
-    /// <summary>Operations holding or waiting for the level, plus a running fade-in. While above zero
-    /// a venue volume change is only noted: the ramp ends on it, or the last one out applies it.</summary>
-    private int _levelBusy;
-
-    private float _level = 1f;
+    /// <summary>The app had a media session at the last read. Windows restores the level it last
+    /// kept for msedge.exe onto every new audio session, so each appearance is pushed to full.</summary>
+    private bool _sessionPresent;
 
     /// <summary>The venue has asked for music and not since paused or stopped it.</summary>
     private volatile bool _wanted;
@@ -73,7 +83,14 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     /// <summary>The last level the mixer took; NaN until it has taken one.</summary>
     private float _applied = float.NaN;
 
+    private readonly object _statusSync = new();
     private (SetupStatus Status, DateTimeOffset ReadAt)? _setupStatus;
+
+    /// <summary>The last status read, kept apart from the cache so forgetting that is not a change.</summary>
+    private SetupStatus? _knownStatus;
+
+    /// <summary>Held for the provider's life: a collected timer stops firing.</summary>
+    private ITimer? _setupStatusTimer;
 
     public YouTubeMusicBreakMusicProvider(
         ILogger<YouTubeMusicBreakMusicProvider> logger, IPluginContext context, IMessageBroker broker,
@@ -93,6 +110,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         string? binDirectory = null)
     {
         _logger = logger;
+        _context = context;
         _broker = broker;
         _flash = flashService;
         _time = time ?? TimeProvider.System;
@@ -121,8 +139,9 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
             return;
         }
 
-        if (SetupStatusNow() is SetupStatus.AppNotInstalled or SetupStatus.NotSignedIn)
-            context.ReportWarning(_controller.NotSetUpWarning);
+        // The first read warns when setup is unfinished; every later move is noticed the same way.
+        SetupStatusNow();
+        _setupStatusTimer = _time.CreateTimer(_ => PollSetupStatus(), null, SetupStatusPoll, SetupStatusPoll);
 
         _controller.SessionChanged += (_, _) => _ = RefreshAsync();
 
@@ -214,7 +233,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
         finally
         {
-            await ReleaseLevelAsync();
+            _levelGate.Release();
         }
     }
 
@@ -238,7 +257,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
         finally
         {
-            await ReleaseLevelAsync();
+            _levelGate.Release();
         }
     }
 
@@ -274,16 +293,8 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
     }
 
-    public async Task SetVolumeAsync(float volume, CancellationToken cancellationToken = default)
-    {
-        Volatile.Write(ref _level, Math.Clamp(volume, 0f, 1f));
-
-        // A ramp in flight ends on the new level; setting it now would jump in the middle of a fade.
-        if (Interlocked.CompareExchange(ref _levelBusy, 0, 0) > 0)
-            return;
-
-        await SetLevelAsync(_level, cancellationToken);
-    }
+    /// <summary>The host never calls this; it stays because the contract carries it.</summary>
+    public Task SetVolumeAsync(float volume, CancellationToken cancellationToken = default) => Task.CompletedTask;
 
     public async Task InvokeButtonAsync(string key, CancellationToken cancellationToken = default)
     {
@@ -309,7 +320,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 return;
         }
 
-        _setupStatus = null;
+        ForgetSetupStatus();
     }
 
     public PluginButtonState DescribeButton(string key)
@@ -334,20 +345,65 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         };
     }
 
+    public void Dispose() => _setupStatusTimer?.Dispose();
+
     private static bool CanPlay(SetupStatus status) => status is SetupStatus.Ready or SetupStatus.NotSignedIn;
 
     /// <summary>Cached briefly: the row is redrawn often, and the check reads the profile's files.</summary>
     private SetupStatus SetupStatusNow()
     {
-        var now = _time.GetUtcNow();
+        SetupStatus status;
+        SetupStatus? before;
 
-        if (_setupStatus is { } cached && now - cached.ReadAt < SetupStatusLifetime)
-            return cached.Status;
+        lock (_statusSync)
+        {
+            var now = _time.GetUtcNow();
 
-        var status = _controller.GetSetupStatus();
-        _setupStatus = (status, now);
+            if (_setupStatus is { } cached && now - cached.ReadAt < SetupStatusLifetime)
+                return cached.Status;
+
+            status = _controller.GetSetupStatus();
+            _setupStatus = (status, now);
+            before = _knownStatus;
+            _knownStatus = status;
+        }
+
+        if (before != status)
+            OnSetupStatusMoved(before, status);
 
         return status;
+    }
+
+    private void ForgetSetupStatus()
+    {
+        lock (_statusSync)
+            _setupStatus = null;
+    }
+
+    private void PollSetupStatus()
+    {
+        try
+        {
+            ForgetSetupStatus();
+            SetupStatusNow();
+        }
+        catch (Exception ex)
+        {
+            // A timer callback that throws takes the host down with it.
+            _logger.LogDebug(ex, "Could not re-read YouTube Music's setup");
+        }
+    }
+
+    /// <summary>A warning cannot be withdrawn, so only a move into an unfinished setup is reported;
+    /// the row's buttons are what show it finished.</summary>
+    private void OnSetupStatusMoved(SetupStatus? before, SetupStatus status)
+    {
+        if (status is SetupStatus.AppNotInstalled or SetupStatus.NotSignedIn)
+            _context.ReportWarning(_controller.NotSetUpWarning);
+
+        // The Plugins page re-reads DescribeButton only when it redraws, and this is what redraws it.
+        if (before is not null)
+            _broker?.Announce(new PluginsChanged());
     }
 
     private async Task<bool> LaunchAndPlayAsync(CancellationToken rampToken, CancellationToken cancellationToken)
@@ -449,10 +505,13 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         // A mixer with nothing to hold yet (Edge before its first sound) plays at the level instead.
         var rising = steps.Count > 0 && await SetLevelAsync(0f, cancellationToken);
 
-        // A refusal leaves the mixer silent; releasing the level puts it back before the throw
-        // reaches the host, or the next start would be silent too.
+        // A refusal leaves the mixer silent; it goes back to full before the throw reaches the
+        // host, or the next start would be silent too.
         if (!await _controller.PlayAsync(cancellationToken))
         {
+            if (rising)
+                await SetLevelAsync(FullLevel, CancellationToken.None);
+
             _logger.LogWarning("YouTube Music refused to play");
             throw new KHostException(
                 "YouTube Music: refused to play.",
@@ -472,10 +531,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     /// <summary>Not awaited by the caller: the host waits on start and resume, and a pause pressed
     /// during the rise has to be able to cut it short.</summary>
     private void BeginRise(IReadOnlyList<float> steps, CancellationToken rampToken)
-    {
-        Interlocked.Increment(ref _levelBusy);
-        _fadeIn = RiseAsync(steps, rampToken);
-    }
+        => _fadeIn = RiseAsync(steps, rampToken);
 
     private async Task RiseAsync(IReadOnlyList<float> steps, CancellationToken rampToken)
     {
@@ -484,7 +540,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
             foreach (var gain in steps)
             {
                 await _delay(FadeCurve.StepInterval, rampToken);
-                await SetLevelAsync(Volatile.Read(ref _level) * gain, rampToken);
+                await SetLevelAsync(FullLevel * gain, rampToken);
             }
         }
         catch (OperationCanceledException) when (rampToken.IsCancellationRequested)
@@ -494,10 +550,6 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "YouTube Music's fade-in stopped part way");
-        }
-        finally
-        {
-            await LeaveLevelAsync();
         }
     }
 
@@ -517,8 +569,8 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 var playing = (await _controller.ReadAsync(cancellationToken))?.Playback == SessionPlayback.Playing;
                 IReadOnlyList<float> steps = playing && fade ? FadeCurve.GainSteps(_fade) : [];
 
-                // From wherever a rise cut short left it, never above the venue's level.
-                var from = float.IsNaN(_applied) ? _level : Math.Min(_applied, _level);
+                // From wherever a rise cut short left it.
+                var from = float.IsNaN(_applied) ? FullLevel : _applied;
 
                 // The first set doubles as the check that the mixer can be reached at all; a fade
                 // with no session to ride would only hold the singer's start for nothing.
@@ -544,27 +596,17 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
         finally
         {
-            await ReleaseLevelAsync();
+            _levelGate.Release();
         }
     }
 
     /// <returns>The token that cuts short a ramp this operation starts.</returns>
     private async Task<CancellationToken> TakeLevelAsync(CancellationToken cancellationToken)
     {
-        Interlocked.Increment(ref _levelBusy);
-
         lock (_rampSync)
             _rampCancel.Cancel();
 
-        try
-        {
-            await _levelGate.WaitAsync(cancellationToken);
-        }
-        catch
-        {
-            await LeaveLevelAsync();
-            throw;
-        }
+        await _levelGate.WaitAsync(cancellationToken);
 
         // Cancelled above; never faults.
         await _fadeIn;
@@ -573,33 +615,6 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         {
             _rampCancel = new CancellationTokenSource();
             return _rampCancel.Token;
-        }
-    }
-
-    private async Task ReleaseLevelAsync()
-    {
-        _levelGate.Release();
-        await LeaveLevelAsync();
-    }
-
-    /// <summary>The last one out applies a venue volume change that arrived while a ramp held it.</summary>
-    private async Task LeaveLevelAsync()
-    {
-        if (Interlocked.Decrement(ref _levelBusy) > 0)
-            return;
-
-        var level = Volatile.Read(ref _level);
-
-        if (float.IsNaN(_applied) || _applied == level)
-            return;
-
-        try
-        {
-            await SetLevelAsync(level, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Could not apply YouTube Music's level after a fade");
         }
     }
 
@@ -614,14 +629,47 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     private async Task ApplyLevelAsync(CancellationToken cancellationToken)
     {
-        if (await SetLevelAsync(_level, cancellationToken))
+        if (await SetLevelAsync(FullLevel, cancellationToken))
             return;
 
-        _ = Task.Run(async () =>
+        _ = Task.Run(() => PushFullLevelAsync(firstTryNow: false), CancellationToken.None);
+    }
+
+    /// <summary>Retried while the audio session has yet to appear. Stands aside for any operation
+    /// holding the level and for a running fade-in: each ends at full by itself, and a set from here
+    /// in the middle of one would jump it.</summary>
+    private async Task PushFullLevelAsync(bool firstTryNow)
+    {
+        try
         {
-            await _delay(LevelRetry, CancellationToken.None);
-            await SetLevelAsync(_level, CancellationToken.None);
-        }, CancellationToken.None);
+            for (var attempt = 0; attempt < LevelRetryAttempts; attempt++)
+            {
+                if (attempt > 0 || !firstTryNow)
+                    await _delay(LevelRetry, CancellationToken.None);
+
+                if (!_levelGate.Wait(0))
+                    return;
+
+                try
+                {
+                    if (!_fadeIn.IsCompleted)
+                        return;
+
+                    if (await SetLevelAsync(FullLevel, CancellationToken.None))
+                        return;
+                }
+                finally
+                {
+                    _levelGate.Release();
+                }
+            }
+
+            _logger.LogDebug("YouTube Music's audio session never appeared to take its level");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not put YouTube Music at full level");
+        }
     }
 
     private async Task PauseThenRestoreLevelAsync(bool faded)
@@ -641,7 +689,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
 
         // Restored for the next start; the mixer remembers a level, and silence would outlive us.
-        await SetLevelAsync(_level, CancellationToken.None);
+        await SetLevelAsync(FullLevel, CancellationToken.None);
     }
 
     private async Task RefreshAsync()
@@ -664,6 +712,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
             _broker?.Announce(new BreakMusicTrackChanged(SourceName));
 
         NoteSignIn(snapshot?.SignedIn);
+        NoteSessionPresence(snapshot);
 
         if (observation.Pending)
         {
@@ -680,6 +729,21 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         return observation;
     }
 
+    private void NoteSessionPresence(SessionSnapshot? snapshot)
+    {
+        // Null is a read that failed, which says nothing about whether the session is there.
+        if (snapshot is null)
+            return;
+
+        var present = snapshot.Playback != SessionPlayback.None;
+        var appeared = present && !_sessionPresent;
+        _sessionPresent = present;
+
+        // Not awaited, and safe to start inline: the first try never waits on the level gate.
+        if (appeared)
+            _ = PushFullLevelAsync(firstTryNow: true);
+    }
+
     /// <summary>Keeps playing signed out: the host is told once, and the setup button moves to the sign-in.</summary>
     private void NoteSignIn(bool? signedIn)
     {
@@ -692,7 +756,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         }
 
         if (_signIn.SignedIn != before)
-            _setupStatus = null;
+            ForgetSetupStatus();
     }
 
     /// <summary>YouTube Music pauses on its own after a long stretch with nobody touching the page,

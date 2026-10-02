@@ -43,15 +43,15 @@ KHost **with no account plugins loaded**. Record pass/fail and any log line quot
       after ~1s (expected; documented). With recovery off it stays paused.
 
 ## 5. Volume and fade
-- [ ] Change the venue volume: the app's slider in Windows *Volume mixer* moves to match, and the
-      host's own Edge slider does not.
+- [ ] Pull the app's slider in Windows *Volume mixer* down (say 15%) and quit Edge. Start break
+      music: the slider is back at 100% once it sounds, and the host's own Edge slider is untouched.
 - [ ] Start a singer's song: the bed fades smoothly (no step, no early cut) over ~1.5s, pauses,
-      then the mixer slider returns to the venue level **with no audible blip**. The song start is
+      then the mixer slider returns to 100% **with no audible blip**. The song start is
       delayed only by the fade.
-- [ ] After the song, the bed resumes **where it stopped**, at the venue level.
+- [ ] After the song, the bed resumes **where it stopped**, rising to 100%.
 - [ ] Fade setting 0 → instant pause. Log has no "Could not set YouTube Music's level" lines.
 - [ ] Restart Edge's audio (kill the `audio.mojom.AudioService` utility in Task Manager) and
-      change the volume: the level still lands (the process lookup is redone).
+      start or resume: the level still lands (the process lookup is redone).
 
 ## 6. Adverts (signed in **without** Premium)
 - [ ] While "Video Ad" / "YouTube Ads …" plays: console names no track and the card is down.

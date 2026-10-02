@@ -145,7 +145,15 @@ public sealed class HelperInstallerTests : IDisposable
 
     // NSWorkspace.setIcon writes this zero-byte marker into a bundle once the helper has fetched
     // music.youtube.com's icon; the shipped app never has one, so it must not count toward the hash.
-    [Fact]
+    [Theory]
+    [InlineData("Icon\r", false)]
+    [InlineData("Contents/Resources/Icon\r", false)]
+    [InlineData("Icon", true)]
+    [InlineData("Contents/Resources/AppIcon.icns", true)]
+    public void CountsTowardHash_OnlyTheFinderCustomIconFileIsLeftOut(string relative, bool counts)
+        => Assert.Equal(counts, HelperInstaller.CountsTowardHash(Path.Combine(_shipped, relative)));
+
+    [UnixFact]
     public void TreeHash_IgnoresFinderCustomIconFile()
     {
         Ship("1");
@@ -158,7 +166,7 @@ public sealed class HelperInstallerTests : IDisposable
 
     // Without the TreeHash exemption above, this reinstalls from the icon-less shipped copy on
     // every single start and wipes the custom icon the helper just set.
-    [Fact]
+    [UnixFact]
     public void Install_InstalledCarriesAFinderCustomIcon_StaysUnchanged()
     {
         Ship("1");
