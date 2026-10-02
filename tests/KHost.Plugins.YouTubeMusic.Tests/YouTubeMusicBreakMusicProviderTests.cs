@@ -807,6 +807,22 @@ public class YouTubeMusicBreakMusicProviderTests
         Assert.True(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
     }
 
+    // A row drawn just before the poll leaves a fresh cached read; the poll must look past it.
+    [Fact]
+    public async Task SetupStatusPoll_RowReadJustBefore_StillSeesTheChange()
+    {
+        _controller.Status = SetupStatus.AppNotInstalled;
+        var provider = Build();
+        _clock.Advance(TimeSpan.FromSeconds(3));
+        await provider.InvokeButtonAsync(YouTubeMusicBreakMusicProvider.SetupButton);
+        provider.DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton);
+
+        _controller.Status = SetupStatus.Ready;
+        _clock.Advance(YouTubeMusicBreakMusicProvider.SetupStatusPoll - TimeSpan.FromSeconds(3));
+
+        _broker.Received(1).Announce(Arg.Any<PluginsChanged>());
+    }
+
     [Fact]
     public void SetupStatusPoll_BeforeItsInterval_HasNotLookedYet()
     {
