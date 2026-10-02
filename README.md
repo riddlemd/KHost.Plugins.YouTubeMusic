@@ -214,9 +214,7 @@ loads plugins only at startup.
 
 Copy the Windows build output (entry dll, `manifest.json`, `WinRT.Runtime.dll`,
 `Microsoft.Windows.SDK.NET.dll`, `.deps.json`, `helper/`) into a folder under KHost's `plugins/`
-directory, enable it on the Plugins page, and restart KHost; the same folder runs on a Mac. Windows
-verification steps are in [docs/windows-verification.md](docs/windows-verification.md); what is
-left to check by hand on macOS is in [docs/macos-verification.md](docs/macos-verification.md).
+directory, enable it on the Plugins page, and restart KHost; the same folder runs on a Mac.
 
 ## Cleanup (macOS)
 
