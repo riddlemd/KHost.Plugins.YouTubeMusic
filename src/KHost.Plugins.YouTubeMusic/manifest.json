@@ -7,7 +7,7 @@
   "description": "Plays break music through YouTube Music on this machine: the app installed in Microsoft Edge on Windows, or KHost's own YouTube Music app on macOS.",
   "icon": "youtube",
   "entryAssembly": "KHost.Plugins.YouTubeMusic.dll",
-  "apiVersion": 5,
+  "apiVersion": 6,
   "settings": [
     { "key": "playlistUrl", "type": "string", "section": "Break music", "label": "Playlist (YouTube Music link — blank resumes whatever the app has loaded)" },
     { "key": "launchIfNotRunning", "type": "bool", "section": "Break music", "label": "Open YouTube Music if it is not already running", "default": true },

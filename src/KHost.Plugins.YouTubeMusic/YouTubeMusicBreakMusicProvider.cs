@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using KHost.Abstractions.Exceptions;
 using KHost.Abstractions.Messaging;
 using KHost.Abstractions.Messaging.Messages;
@@ -135,14 +134,14 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
         if (!string.IsNullOrWhiteSpace(settings.PlaylistUrl) && _startUrl is null)
         {
-            AddWarning(
+            _context.AddWarning(
                 $"'{settings.PlaylistUrl}' is not a YouTube Music playlist link, so break music will "
                 + "resume whatever the app already has loaded instead.");
         }
 
         if (_controller.Unavailable is { } reason)
         {
-            AddWarning(reason);
+            _context.AddWarning(reason);
             return;
         }
 
@@ -411,11 +410,11 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         {
             if (unfinished && _notSetUpWarning == 0)
             {
-                _notSetUpWarning = AddWarning(_controller.NotSetUpWarning);
+                _notSetUpWarning = _context.AddWarning(_controller.NotSetUpWarning);
             }
             else if (!unfinished && _notSetUpWarning != 0)
             {
-                ClearWarning(_notSetUpWarning);
+                _context.ClearWarning(_notSetUpWarning);
                 _notSetUpWarning = 0;
             }
         }
@@ -777,42 +776,6 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         if (_signIn.SignedIn != before)
             ForgetSetupStatus();
     }
-
-    /// <returns>The warning's id, or 0 on a host too old to clear one (contracts before 0.45).</returns>
-    private int AddWarning(string message)
-    {
-        try
-        {
-            return AddWarningOnThisHost(message);
-        }
-        catch (MissingMethodException)
-        {
-#pragma warning disable CS0618 // The only way an older host shows a warning.
-            _context.ReportWarning(message);
-#pragma warning restore CS0618
-            return 0;
-        }
-    }
-
-    private void ClearWarning(int id)
-    {
-        try
-        {
-            ClearWarningOnThisHost(id);
-        }
-        catch (MissingMethodException)
-        {
-            // Unreachable in practice: an id only comes from a host that has AddWarning.
-        }
-    }
-
-    // Each its own method so a host without the member fails at this call, where the caller catches
-    // it: inside the caller the JIT would throw before the caller's first line ran.
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private int AddWarningOnThisHost(string message) => _context.AddWarning(message);
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private void ClearWarningOnThisHost(int id) => _context.ClearWarning(id);
 
     /// <summary>YouTube Music pauses on its own after a long stretch with nobody touching the page,
     /// behind "Are you still there?". Nothing outside the page can answer the prompt; pressing play
