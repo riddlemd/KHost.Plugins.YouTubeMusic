@@ -224,12 +224,26 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
         {
             Directory.CreateDirectory(_profileDirectory);
 
-            var start = new ProcessStartInfo(_edgePath) { UseShellExecute = false };
+            var start = new ProcessStartInfo(_edgePath)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
 
             foreach (var argument in arguments)
                 start.ArgumentList.Add(argument);
 
-            Process.Start(start)?.Dispose();
+            var process = Process.Start(start);
+
+            if (process is not null)
+            {
+                // Both drained: a redirected pipe nobody reads fills and stalls Edge's writes.
+                _ = Task.WhenAll(
+                        EdgeOutput.DrainAsync(process.StandardOutput, _logger, "stdout"),
+                        EdgeOutput.DrainAsync(process.StandardError, _logger, "stderr"))
+                    .ContinueWith(_ => process.Dispose(), TaskScheduler.Default);
+            }
 
             return true;
         }
