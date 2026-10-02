@@ -26,7 +26,10 @@
   <PropertyGroup>
     <_DeployTargetFramework Condition="$([MSBuild]::IsOSPlatform('Windows'))">net10.0-windows10.0.19041.0</_DeployTargetFramework>
     <_DeployTargetFramework Condition="!$([MSBuild]::IsOSPlatform('Windows'))">net10.0</_DeployTargetFramework>
-    <_KHostOutputDir>$(MSBuildProjectDirectory)\..\..\..\KHost\src\KHost.UserInterface\bin\Debug\net10.0</_KHostOutputDir>
+    <!-- KHost/main in the repo/branch layout, else the sibling KHost; first found wins. -->
+    <_KHostRepoDir Condition="Exists('$(MSBuildProjectDirectory)\..\..\..\..\KHost\main')">$(MSBuildProjectDirectory)\..\..\..\..\KHost\main</_KHostRepoDir>
+    <_KHostRepoDir Condition="'$(_KHostRepoDir)' == ''">$(MSBuildProjectDirectory)\..\..\..\KHost</_KHostRepoDir>
+    <_KHostOutputDir>$(_KHostRepoDir)\src\KHost.UserInterface\bin\Debug\net10.0</_KHostOutputDir>
     <_PluginDeployDir>$(_KHostOutputDir)\plugins\khost.youtube-music</_PluginDeployDir>
   </PropertyGroup>
 
