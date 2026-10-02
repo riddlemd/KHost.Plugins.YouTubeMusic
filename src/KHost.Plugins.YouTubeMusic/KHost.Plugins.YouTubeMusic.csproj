@@ -3,25 +3,58 @@
   <PropertyGroup>
     <!-- The Windows target carries the WinRT projection for Windows.Media.Control and is the only
          one that drives Windows. Both drive the macOS helper app (helpers/macos), which every build
-         carries; on Linux the plugin loads and reports itself unavailable. -->
-    <TargetFrameworks>net10.0;net10.0-windows10.0.19041.0</TargetFrameworks>
+         carries; on Linux the plugin loads and reports itself unavailable. The Windows target is
+         built only on Windows: cswinrt.exe, which generates its embedded projection, is a Windows
+         program. -->
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('Windows'))">net10.0;net10.0-windows10.0.19041.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
   </PropertyGroup>
 
-  <!-- Off Windows the Windows reference pack must be asked for, or the whole build fails NETSDK1100,
-       the plain target included. -->
-  <PropertyGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
-    <EnableWindowsTargeting>true</EnableWindowsTargeting>
-  </PropertyGroup>
-
+  <!-- Embedded, not the shipped WinRT.Runtime.dll: that assembly registers one ComWrappers for the
+       whole process, so beside another plugin carrying its own copy (Spotify does) whichever starts
+       second throws "Attempt to update previously set global instance". The embedded runtime skips
+       that registration and lives only in this assembly. -->
   <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
     <DefineConstants>$(DefineConstants);WINDOWS_MEDIA_SESSION</DefineConstants>
-    <!-- The host is a plain net10.0 process with no WinRT projection of its own; without a copy
-         beside the plugin the first media-session read throws FileNotFoundException. -->
-    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <IncludeWindowsSDKRefFrameworkReferences>false</IncludeWindowsSDKRefFrameworkReferences>
+    <!-- The SDK still downloads this pack with the reference switched off; pinning it here keeps
+         the folder cswinrt reads in step with the one restored. -->
+    <WindowsSdkPackageVersion>10.0.19041.57</WindowsSdkPackageVersion>
+    <CsWinRTEmbedded>true</CsWinRTEmbedded>
+    <CsWinRTWindowsMetadata>$(NuGetPackageRoot)microsoft.windows.sdk.net.ref\$(WindowsSdkPackageVersion)\winmd</CsWinRTWindowsMetadata>
+    <!-- Only what the media session reaches. A namespace prefix pulls in everything under it, so the
+         stream types are named one by one and the statics that reach into Windows.Storage are left
+         out; PropertyType ships inside the embedded runtime already. -->
+    <CsWinRTIncludes>
+      Windows.Media.Control;
+      Windows.Media.MediaPlaybackAutoRepeatMode;
+      Windows.Media.MediaPlaybackType;
+      Windows.Foundation;
+      Windows.Storage.Streams.IRandomAccessStreamReference;
+      Windows.Storage.Streams.IRandomAccessStreamWithContentType;
+      Windows.Storage.Streams.IRandomAccessStream;
+      Windows.Storage.Streams.IInputStream;
+      Windows.Storage.Streams.IOutputStream;
+      Windows.Storage.Streams.IBuffer;
+      Windows.Storage.Streams.IContentTypeProvider;
+      Windows.Storage.Streams.InputStreamOptions;
+    </CsWinRTIncludes>
+    <CsWinRTExcludes>
+      Windows.Foundation.PropertyType;
+      Windows.Foundation.Diagnostics;
+      Windows.Storage.Streams.IBufferFactory;
+      Windows.Storage.Streams.IBufferStatics;
+      Windows.Storage.Streams.IRandomAccessStreamReferenceStatics;
+      Windows.Storage.Streams.IRandomAccessStreamStatics;
+    </CsWinRTExcludes>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
+    <PackageReference Include="Microsoft.Windows.CsWinRT" Version="2.2.0" PrivateAssets="all" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Not ExcludeAssets="runtime": the package's own build/ targets already keep both out of this

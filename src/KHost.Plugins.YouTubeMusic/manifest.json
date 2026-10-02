@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/riddlemd/KHost/main/src/KHost.Abstractions/Models/Plugins/manifest.schema.json",
   "id": "0ebd4267-16d2-495e-9c3e-f8f49b6ec389",
   "name": "YouTube Music Break Music",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "KHost",
   "description": "Plays break music through YouTube Music on this machine: the app installed in Microsoft Edge on Windows, or KHost's own YouTube Music app on macOS.",
   "icon": "youtube",
