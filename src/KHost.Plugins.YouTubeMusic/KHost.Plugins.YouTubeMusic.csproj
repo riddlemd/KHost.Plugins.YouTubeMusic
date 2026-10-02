@@ -23,16 +23,6 @@
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
-  <PropertyGroup>
-    <_DeployTargetFramework Condition="$([MSBuild]::IsOSPlatform('Windows'))">net10.0-windows10.0.19041.0</_DeployTargetFramework>
-    <_DeployTargetFramework Condition="!$([MSBuild]::IsOSPlatform('Windows'))">net10.0</_DeployTargetFramework>
-    <!-- KHost/main in the repo/branch layout, else the sibling KHost; first found wins. -->
-    <_KHostRepoDir Condition="Exists('$(MSBuildProjectDirectory)\..\..\..\..\KHost\main')">$(MSBuildProjectDirectory)\..\..\..\..\KHost\main</_KHostRepoDir>
-    <_KHostRepoDir Condition="'$(_KHostRepoDir)' == ''">$(MSBuildProjectDirectory)\..\..\..\KHost</_KHostRepoDir>
-    <_KHostOutputDir>$(_KHostRepoDir)\src\KHost.UserInterface\bin\Debug\net10.0</_KHostOutputDir>
-    <_PluginDeployDir>$(_KHostOutputDir)\plugins\khost.youtube-music</_PluginDeployDir>
-  </PropertyGroup>
-
   <ItemGroup>
     <!-- Not ExcludeAssets="runtime": the package's own build/ targets already keep both out of this
          plugin's output, and excluding runtime here would strip them from the test project too. -->
@@ -123,26 +113,6 @@
       <_HelperFile Include="$(_HelperApp)/**/*" />
       <None Include="@(_HelperFile)" Link="helper/YouTube Music.app/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
-  </Target>
-
-  <!-- Dev convenience: drop the built plugin into a sibling KHost checkout's runtime plugins
-       folder when one exists. Harmless no-op anywhere else. -->
-  <Target Name="DeployToSiblingKHost" AfterTargets="Build"
-          Condition="Exists('$(_KHostOutputDir)') And '$(TargetFramework)' == '$(_DeployTargetFramework)'">
-    <ItemGroup>
-      <!-- Globbed inside the target so it sees what is on disk now, not at evaluation. -->
-      <_StalePluginFiles Include="$(_PluginDeployDir)\**\*" />
-      <_PluginFiles Include="$(TargetDir)**\*" />
-    </ItemGroup>
-
-    <!-- Emptied first, because a copy only overwrites what it brings, and so the two target
-         frameworks never layer: only one ships the WinRT projection. ContinueOnError so a running
-         KHost, which holds loaded plugin assemblies mapped on Windows, fails on the copy below
-         with a message naming the locking process instead of here with a bare delete error. -->
-    <Delete Files="@(_StalePluginFiles)" ContinueOnError="true" />
-
-    <Copy SourceFiles="@(_PluginFiles)"
-          DestinationFiles="@(_PluginFiles->'$(_PluginDeployDir)\%(RecursiveDir)%(Filename)%(Extension)')" />
   </Target>
 
 </Project>

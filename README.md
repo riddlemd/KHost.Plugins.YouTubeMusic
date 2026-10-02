@@ -1,6 +1,6 @@
 # KHost.Plugins.YouTubeMusic
 
-Break-music provider for [KHost](../KHost). It puts YouTube Music on between singers and fades it
+Break-music provider for [KHost](https://github.com/riddlemd/KHost). It puts YouTube Music on between singers and fades it
 out when one starts.
 
 The plugin **drives YouTube Music on this machine; it does not carry the audio**: the app installed
@@ -212,9 +212,7 @@ blank-Rid release a Mac installs is the Windows target.
 - `.gitattributes` keeps `helpers/macos/` byte-exact on every checkout; a CRLF conversion would
   fail the stamp.
 
-The built app is about 400 KB. A build copies this OS's target into a sibling KHost checkout's
-runtime `plugins/` folder when one exists, as the other plugins do; stop that host first, since it
-loads plugins only at startup.
+The built app is about 400 KB.
 
 ## Installing
 
