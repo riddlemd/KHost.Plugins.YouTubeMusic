@@ -23,6 +23,8 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
     private readonly ILogger _logger;
     private readonly string _profileDirectory;
     private readonly string? _edgePath;
+    private readonly TimeProvider _time;
+    private readonly SessionSightings _sightings = new();
 
     /// <summary>Held for the controller's life: a collected manager raises nothing.</summary>
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
@@ -30,10 +32,11 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
     private HashSet<int> _audioProcessIds = [];
     private int _raiseGeneration;
 
-    public WindowsYouTubeMusicController(ILogger logger, string profileDirectory)
+    public WindowsYouTubeMusicController(ILogger logger, string profileDirectory, TimeProvider? time = null)
     {
         _logger = logger;
         _profileDirectory = profileDirectory;
+        _time = time ?? TimeProvider.System;
         _edgePath = EdgeLocator.Find(
             EdgeLocator.Candidates(
                 ReadAppPathsEntry(),
@@ -175,11 +178,16 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
 
             if (!ReferenceEquals(session, _watched))
             {
+                if (_watched is not null)
+                    _sightings.NoteLost(_time.GetUtcNow());
+
                 _watched = session;
 
                 if (session is not null)
                 {
-                    _logger.LogInformation("Found YouTube Music's media session ({AppId})", session.SourceAppUserModelId);
+                    _logger.Log(
+                        _sightings.NoteFound(_time.GetUtcNow()),
+                        "Found YouTube Music's media session ({AppId})", session.SourceAppUserModelId);
                     session.PlaybackInfoChanged += (_, _) => RaiseCoalesced();
                     session.MediaPropertiesChanged += (_, _) => RaiseCoalesced();
                 }
