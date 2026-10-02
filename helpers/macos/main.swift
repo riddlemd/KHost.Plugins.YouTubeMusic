@@ -25,6 +25,7 @@
 
 import Cocoa
 import WebKit
+import os
 
 let kProtocol = 1
 let kHome = URL(string: "https://music.youtube.com/")!
@@ -52,11 +53,55 @@ let appName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") a
 /// Objective-C exception on EPIPE, which turned every quit-with-the-host into a crash.
 func log(_ text: String) {
     _ = writeAll(STDERR_FILENO, Data("[ytm-helper] \(text)\n".utf8))
+    // The plugin does not read stderr, so the unified log is the only place a line can be read back.
+    unifiedLog.notice("\(text, privacy: .public)")
+}
+
+let unifiedLog = Logger(subsystem: "com.khost.youtube-music-helper", category: "helper")
+
+/// Host, path and query names only: a sign-in page's query values can carry tokens.
+func describe(_ url: URL) -> String {
+    let names = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.map(\.name) ?? []
+    return "\(url.host ?? "?")\(url.path)" + (names.isEmpty ? "" : "?" + names.joined(separator: ","))
 }
 
 func musicURL(_ text: String) -> URL? {
     guard let url = URL(string: text), url.scheme == "https", url.host == "music.youtube.com" else { return nil }
     return url
+}
+
+/// YouTube Music's own sign-in entry (its ytcfg SIGNIN_URL). passive=true finishes with no UI while a
+/// Google session exists, then runs www.youtube.com/signin, which is what mints the .youtube.com session.
+let kSignInHandoff = URL(string: "https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&uilel=3&passive=true&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26app%3Ddesktop%26hl%3Den%26next%3Dhttps%253A%252F%252Fmusic.youtube.com%252F&hl=en")!
+
+/// Where to send the player after it finished loading `url`, or nil to leave it there. A sign-in
+/// begun in the player (YouTube Music's "Sign in" is a same-frame link) can end on a Google page with
+/// nowhere to go, signed in to Google but never handed back to YouTube.
+func handoffURL(afterFinishing url: URL, alreadyTried: Bool) -> URL? {
+    guard url.scheme == "https", let host = url.host?.lowercased(),
+          host == "google.com" || host.hasSuffix(".google.com") else { return nil }
+
+    let path = url.path
+
+    // Google's own account pages are never part of signing in, whatever they say comes next: after a
+    // passkey Google sends the user to its security checkup, with a continue that never reaches YouTube.
+    if host == "myaccount.google.com" {
+        return path.hasPrefix("/accounts/") ? nil : (alreadyTried ? kHome : kSignInHandoff)
+    }
+
+    // Elsewhere a page that still names where it goes next is mid-flow (consent, interstitials, SetSID).
+    let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    if query.contains(where: { $0.name == "continue" }) { return nil }
+    let stranded: Bool
+    if host == "accounts.google.com" {
+        // Everything else here is the sign-in itself (signin, challenge, passkey, v3/signin...).
+        stranded = path == "/CheckCookie" || path.hasPrefix("/ManageAccount")
+    } else {
+        stranded = !path.hasPrefix("/accounts/")
+    }
+
+    guard stranded else { return nil }
+    return alreadyTried ? kHome : kSignInHandoff
 }
 
 /// Google refuses sign-in to an embedded browser it does not recognise; Safari's own string, with
@@ -426,6 +471,10 @@ final class Helper: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
     var server: SocketServer?
     var activity: NSObjectProtocol?
     var appIcon: AppIcon?
+    /// Set when the player was sent through kSignInHandoff; cleared once it is back on music.youtube.com.
+    var handoffTried = false
+    var handedOffFrom: URL?
+    var urlObservation: NSKeyValueObservation?
     let userAgent = safariUserAgent()
     let stdout = StdoutSink()
     lazy var pageSource: String = {
@@ -454,6 +503,11 @@ final class Helper: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
         web = WKWebView(frame: NSRect(x: 0, y: 0, width: 1100, height: 760), configuration: configuration)
         web.customUserAgent = userAgent
         web.navigationDelegate = self
+        // Google's account pages change page client-side, which no didFinish reports.
+        urlObservation = web.observe(\.url, options: [.new]) { [weak self] view, _ in
+            guard let url = view.url else { return }
+            self?.mainViewArrived(at: url)
+        }
         web.uiDelegate = self
         web.allowsBackForwardNavigationGestures = true
         if #available(macOS 13.3, *) { web.isInspectable = true }
@@ -711,6 +765,32 @@ final class Helper: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
             return
         }
         decisionHandler(.allow)
+    }
+
+    /// didFinish, not didCommit: it carries the URL after every server redirect has landed.
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard webView === web, let url = webView.url else { return }
+        mainViewArrived(at: url)
+    }
+
+    /// Reached from both didFinish and the URL observation, which can report the same page twice.
+    func mainViewArrived(at url: URL) {
+        if url.host == "music.youtube.com" {
+            handoffTried = false
+            handedOffFrom = nil
+            return
+        }
+
+        if url.host?.hasSuffix("google.com") == true { log("main view at \(describe(url))") }
+
+        guard url != handedOffFrom,
+              let target = handoffURL(afterFinishing: url, alreadyTried: handoffTried) else { return }
+
+        // A second stranding after the hand-off goes home and stays there, so it can never loop.
+        handoffTried = true
+        handedOffFrom = url
+        log("sign-in ended on \(describe(url)); loading \(target == kHome ? "home" : "the YouTube sign-in hand-off")")
+        web.load(URLRequest(url: target))
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,

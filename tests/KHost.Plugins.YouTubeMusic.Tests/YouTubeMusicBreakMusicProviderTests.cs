@@ -168,7 +168,7 @@ public class YouTubeMusicBreakMusicProviderTests
 
         var provider = Build();
 
-        _context.Received(1).ReportWarning("Windows only");
+        _context.Received(1).AddWarning("Windows only");
         await Assert.ThrowsAsync<KHostException>(() => provider.StartAsync());
         Assert.Equal(BreakMusicPlayback.Stopped, await provider.ReadPlaybackAsync());
         Assert.Empty(_controller.Calls);
@@ -179,7 +179,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         Build(new YouTubeMusicSettings { PlaylistUrl = "https://example.com/" });
 
-        _context.Received(1).ReportWarning(Arg.Is<string>(m => m.Contains("not a YouTube Music playlist link")));
+        _context.Received(1).AddWarning(Arg.Is<string>(m => m.Contains("not a YouTube Music playlist link")));
     }
 
     // The fade is what the host waits on before the singer's song starts; it has to come down in
@@ -599,7 +599,7 @@ public class YouTubeMusicBreakMusicProviderTests
 
         Assert.Equal(PluginButtonState.Default, provider.DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton));
         Assert.False(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
-        _context.Received(1).ReportWarning(Arg.Is<string>(m => m.Contains("Set up YouTube Music")));
+        _context.Received(1).AddWarning(Arg.Is<string>(m => m.Contains("Set up YouTube Music")));
     }
 
     [Fact]
@@ -640,7 +640,7 @@ public class YouTubeMusicBreakMusicProviderTests
 
         Build();
 
-        _context.Received(1).ReportWarning("Press setup; Edge opens.");
+        _context.Received(1).AddWarning("Press setup; Edge opens.");
     }
 
     [Fact]
@@ -959,7 +959,37 @@ public class YouTubeMusicBreakMusicProviderTests
 
         Build();
 
-        _context.Received(1).ReportWarning("Sign in, please.");
+        _context.Received(1).AddWarning("Sign in, please.");
+    }
+
+    [Fact]
+    public void SessionChanged_SignedIn_ClearsTheNotSignedInWarningByItsId()
+    {
+        _controller.Status = SetupStatus.NotSignedIn;
+        _controller.NotSetUpWarning = "Sign in, please.";
+        _context.AddWarning("Sign in, please.").Returns(7);
+        _controller.Snapshot = SignedOut;
+        var provider = Build();
+        _controller.RaiseSessionChanged();
+        _context.DidNotReceive().ClearWarning(Arg.Any<int>());
+
+        _controller.Snapshot = SignedIn;
+        _controller.RaiseSessionChanged();
+        _controller.RaiseSessionChanged();
+
+        _context.Received(1).ClearWarning(7);
+    }
+
+    // Signed in at start: nothing was shown, so there is nothing to clear.
+    [Fact]
+    public void SessionChanged_SignedInWithNoWarningShown_ClearsNothing()
+    {
+        _controller.Snapshot = SignedIn;
+        var provider = Build();
+
+        _controller.RaiseSessionChanged();
+
+        _context.DidNotReceive().ClearWarning(Arg.Any<int>());
     }
 
     [Fact]
@@ -1001,6 +1031,18 @@ public class YouTubeMusicBreakMusicProviderTests
         await provider.StartAsync();
 
         _flash.Received(1).Show(YouTubeMusicBreakMusicProvider.SignedOutMessage, FlashType.Warning);
+    }
+
+    // The flash tells the host which button to press, so it has to be the one the row shows signed out.
+    [Fact]
+    public void SignedOutMessage_NamesTheSignedOutSetupButton()
+    {
+        _controller.Status = SetupStatus.NotSignedIn;
+
+        var label = Build().DescribeButton(YouTubeMusicBreakMusicProvider.SetupButton).Label;
+
+        Assert.Equal("Sign in to YouTube Music", label);
+        Assert.Contains($"\"{label}\"", YouTubeMusicBreakMusicProvider.SignedOutMessage);
     }
 
     // Never signed in is a setup state the button already shows, not news.

@@ -81,8 +81,14 @@ shared.
   [Pear Desktop](https://github.com/pear-devs/pear-desktop), MIT, © th-ch); play also presses the
   dialog's confirm button if it is up.
 - **Signed out still plays**, with adverts. If the sign-in is lost while the venue wants music, the
-  console flashes once — *YouTube Music: signed out — press Set up to sign in again* — and the music
-  carries on; the setup button turns to *Sign in to YouTube Music*.
+  console flashes once — *YouTube Music: signed out — press "Sign in to YouTube Music" on the Plugins
+  page* — and the music carries on; the setup button turns to *Sign in to YouTube Music*.
+- **A sign-in that strands the player is handed back.** YouTube Music's own *Sign in* runs Google's
+  sign-in in the player itself, and Google can finish it on a Google page (myaccount.google.com, say)
+  without the trip through www.youtube.com that signs YouTube in. When the player finishes loading
+  such a page, the app loads YouTube Music's own sign-in entry, which completes with no prompt while
+  the Google session is fresh and lands back on music.youtube.com. If that strands too, it goes to
+  the home page and tries no more.
 
 ## Fades
 
