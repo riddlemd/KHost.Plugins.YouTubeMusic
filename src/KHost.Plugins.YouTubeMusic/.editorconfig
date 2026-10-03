@@ -1,0 +1,4 @@
+# cswinrt's embedded projection carries no nullable annotations; marked generated, the compiler
+# stops reporting them as hundreds of warnings that would bury this project's own.
+[obj/**/Generated Files/CsWinRT/**.cs]
+generated_code = true
