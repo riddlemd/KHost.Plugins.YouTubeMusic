@@ -6,7 +6,7 @@ out when one starts.
 The plugin **drives YouTube Music on this machine; it does not carry the audio**: the app installed
 in Microsoft Edge on Windows, and on macOS KHost's own **YouTube Music** app, a small WebKit window
 the plugin ships and launches. The sound comes out of that app, so the host cannot route it to a
-screen or a Cast device, and `RendersThroughHost` is false. There is no API key and no OAuth: the
+screen or a Cast device. There is no API key and no OAuth: the
 plugin uses the signed-in page on the machine.
 
 **Windows and macOS.** On Linux the plugin loads, says so on the Plugins page, and plays nothing; the
