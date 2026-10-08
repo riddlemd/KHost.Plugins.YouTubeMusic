@@ -66,10 +66,6 @@ public class YouTubeMusicBreakMusicProviderTests
     private static readonly YouTubeMusicSettings ShortFade = new() { FadeMilliseconds = 300 };
 
     [Fact]
-    public void RendersThroughHost_IsFalse_BecauseTheSoundLeavesEdgesOwnOutput()
-        => Assert.False(Build().RendersThroughHost);
-
-    [Fact]
     public async Task StartAsync_AlreadyPlaying_SendsNoCommandButTheLevel()
     {
         _controller.Snapshot = Playing;

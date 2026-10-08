@@ -159,8 +159,6 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     public string SourceName => nameof(YouTubeMusicBreakMusicProvider);
 
-    public bool RendersThroughHost => false;
-
     /// <summary>Null while an advert plays: the room hears it, but the screen does not name it.</summary>
     public BreakMusicTrack? CurrentTrack => _tracker.Track;
 
