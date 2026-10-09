@@ -43,8 +43,14 @@ public sealed class FakeYouTubeMusicController : IYouTubeMusicController
 
     public Task StartWatchingAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
+    /// <summary>Run on every read, as a read that takes time would move the clock.</summary>
+    public Action? OnRead { get; set; }
+
     public Task<SessionSnapshot?> ReadAsync(CancellationToken cancellationToken = default)
-        => Task.FromResult(QueuedSnapshots.Count > 0 ? QueuedSnapshots.Dequeue() : Snapshot);
+    {
+        OnRead?.Invoke();
+        return Task.FromResult(QueuedSnapshots.Count > 0 ? QueuedSnapshots.Dequeue() : Snapshot);
+    }
 
     public bool StatusThrows { get; set; }
 

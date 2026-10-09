@@ -116,6 +116,23 @@ public class YouTubeMusicBreakMusicProviderTests
         Assert.Equal(YouTubeMusicBreakMusicProvider.SessionWait, _clock.Now - started);
     }
 
+    // A cold Edge start slows every read; added to each poll they once stretched 20s to 37s.
+    [Fact]
+    public async Task StartAsync_ReadsTakeTime_GivesUpAtTheWaitNotAfterIt()
+    {
+        var read = TimeSpan.FromMilliseconds(200);
+        _controller.Snapshot = SessionSnapshot.None;
+        var provider = Build();
+        _controller.OnRead = () => _clock.Advance(read);
+        var started = _clock.Now;
+
+        await Assert.ThrowsAsync<KHostException>(() => provider.StartAsync());
+
+        // The look before the launch, and the read after the last poll (cut to what was left), are
+        // all that run over.
+        Assert.Equal(YouTubeMusicBreakMusicProvider.SessionWait + read * 2, _clock.Now - started);
+    }
+
     [Fact]
     public async Task StartAsync_NotRunningAndNotAllowedToLaunch_DoesNothing()
     {

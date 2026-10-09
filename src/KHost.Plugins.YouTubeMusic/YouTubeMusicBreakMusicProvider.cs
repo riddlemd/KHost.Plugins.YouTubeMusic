@@ -455,13 +455,14 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 "KH-YTMUSIC-LAUNCH-FAILED");
         }
 
-        var waited = TimeSpan.Zero;
+        // Measured on the clock, not summed from the polls: each read can take a while during a cold
+        // Edge start, and summing let those stack the wait well past SessionWait.
+        var deadline = _time.GetUtcNow() + SessionWait;
         SessionSnapshot? session = null;
 
-        while (waited < SessionWait)
+        for (var remaining = SessionWait; remaining > TimeSpan.Zero; remaining = deadline - _time.GetUtcNow())
         {
-            await _delay(SessionPoll, cancellationToken);
-            waited += SessionPoll;
+            await _delay(remaining < SessionPoll ? remaining : SessionPoll, cancellationToken);
 
             session = await _controller.ReadAsync(cancellationToken);
 
