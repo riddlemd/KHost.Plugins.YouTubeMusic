@@ -11,9 +11,8 @@ plugin uses the signed-in page on the machine.
 
 **Windows and macOS.** On Linux the plugin loads, says so on the Plugins page, and plays nothing; the
 intended route there is the macOS design again, the same helper built on WebKitGTK.
-Each platform is a controller behind one seam (`IYouTubeMusicController`); what the reads mean
-(skip gaps, adverts, unasked pauses), the fade curve and every decision the provider makes are
-shared.
+Each platform is a controller behind one seam (`IYouTubeMusicController`); the provider's decisions
+and the fade curve are shared.
 
 ## How it works on Windows
 
@@ -40,58 +39,33 @@ shared.
 ## How it works on macOS
 
 - **KHost's own YouTube Music app.** The plugin carries `YouTube Music.app` (bundle id
-  `com.khost.youtube-music-helper`; Swift, universal arm64 + x86_64, ad-hoc signed; source in
-  `helpers/macos/`). It is music.youtube.com in a WebKit view and nothing else: **one Dock icon**
-  named *YouTube Music*, no browser, no second Chrome, no consent prompt. Clicking the Dock icon
-  shows the window; closing the window hides it and the music plays on; ⌘Q quits it. Its icon is
-  never shipped: it is fetched at runtime from music.youtube.com's own web app manifest (the way a
-  browser's "install as app" does), cached under its `Caches/` folder, and written onto the
-  installed bundle with `NSWorkspace.setIcon` so Finder and the Dock show it before it has run.
-- **Installed into the host's shared `bin/`** at
-  `<KHost>/bin/khost.youtube-music/YouTube Music.app` (`IHostDirectories.BinDirectory`, a folder
-  distinctly this plugin's). It is copied there when the plugin loads, and only when its files
-  differ from what is there; a running copy is never replaced under itself (the next start after it
-  quits picks the update up). It launches from there rather than from the plugin folder because a
-  plugin update replaces that folder whole, and a stable path keeps it the same app to the Dock.
-- **Its own signed-in data store.** WebKit keeps a persistent store per bundle id, so the Google
-  sign-in lives in the app and nowhere else (paths under [Cleanup](#cleanup-macos)). It presents
-  itself as this Mac's Safari (the version read from `/Applications/Safari.app`), which is what lets
-  Google's sign-in run in it; sign-in popups open in a window of their own and land back in the
-  player. App Nap is held off for as long as it runs, so a hidden window keeps time.
-- **The control channel is the app's stdin and stdout**, one JSON object per line each way
-  (`state`, `play`, `pause`, `next`, `level`, `keepAlive`, `load`, `show`, `hide`, `quit`).
-  The plugin starts the app's executable itself with `--khost-stdio`, so the pipe *is* the lifetime:
-  when the host ends, however it ends, the pipe closes and the app quits with it. There is no port
-  and no token.
-- **One copy per Mac.** The app also listens on a Unix socket,
-  `~/Library/Caches/com.khost.youtube-music-helper/khost.sock` (owner-only, and the peer's uid is
-  checked), so a copy the host opened from the Dock or Finder can still be driven: the plugin looks
-  there before launching, and drives that copy instead. Such a copy says it was opened by the user
-  and does **not** quit with the host. A second copy started while one runs says `busy` and exits;
-  opened by hand, it brings the running one forward. A home folder whose path makes the socket longer
-  than macOS allows (104 bytes) gets no socket, and only a copy the plugin launched is driven.
-- **Everything else is the page's own**, run in the page's JavaScript world from
-  `helpers/macos/youtube-music-page.js`: play, pause and next through the player's API, volume (the
-  player's whole percent plus the `<video>` element's exact level, so the fade's quiet steps land),
-  now-playing from `navigator.mediaSession`, adverts from the player's `ad-showing` class, the
-  sign-in from the page's own `LOGGED_IN` flag. Nothing else on the Mac gets quieter.
-- **A cold launch is held at silence.** The plugin launches the app behind the karaoke screen at the
-  playlist with `--initial-level 0`: every media element on the page is held at that level until the
-  plugin's first level command, so a list that autoplays starts at the bottom of the fade-in rather
-  than at the player's own volume. Pointing a copy that is already up at the list holds it the same way.
-- **Now-playing is polled once a second.** "Are you still there?" is headed off by marking the page
-  active every 5 minutes while it plays, and on every play (`window._lact = Date.now()`, from
-  [Pear Desktop](https://github.com/pear-devs/pear-desktop), MIT, © th-ch); play also presses the
-  dialog's confirm button if it is up.
+  `com.khost.youtube-music-helper`; Swift, universal, source in `helpers/macos/`). It is
+  music.youtube.com in a WebKit view and nothing else: **one Dock icon**, no browser, no consent
+  prompt. Clicking the Dock icon shows the window; closing the window hides it and the music plays
+  on; ⌘Q quits it.
+- **Installed into the host's shared `bin/`** at `<KHost>/bin/khost.youtube-music/YouTube Music.app`
+  when the plugin loads, and only when its files differ. A running copy is never replaced under
+  itself. It launches from there because a plugin update replaces the plugin folder whole, and a
+  stable path keeps it the same app to the Dock.
+- **Its own signed-in data store.** The Google sign-in lives in the app and nowhere else (paths
+  under [Cleanup](#cleanup-macos)). It presents itself as this Mac's Safari, which is what lets
+  Google's sign-in run in it.
+- **Control** is a JSON-lines channel on the app's stdin and stdout. The plugin starts the app with
+  `--khost-stdio`, so when the host ends the pipe closes and the app quits with it.
+- **One copy per Mac.** The app also listens on an owner-only Unix socket in
+  `~/Library/Caches/com.khost.youtube-music-helper/`, so a copy opened from the Dock or Finder can
+  still be driven. Such a copy does **not** quit with the host. A second copy started while one
+  runs exits. A home folder path too long for a socket gets none, and only a copy the plugin
+  launched is driven.
+- **Everything else is the page's own** (`helpers/macos/youtube-music-page.js`): play, pause, next,
+  volume, now-playing, adverts and the sign-in state. Nothing else on the Mac gets quieter.
+- **A cold launch is held at silence** (`--initial-level 0`) until the plugin's first level command,
+  so an autoplaying list starts at the bottom of the fade-in.
+- **"Are you still there?" is headed off** by marking the page active every 5 minutes while it
+  plays, and on every play (`window._lact = Date.now()`, from
+  [Pear Desktop](https://github.com/pear-devs/pear-desktop), MIT, © th-ch).
 - **Signed out still plays**, with adverts. If the sign-in is lost while the venue wants music, the
-  console flashes once — *YouTube Music: signed out — press "Sign in to YouTube Music" on the Plugins
-  page* — and the music carries on; the setup button turns to *Sign in to YouTube Music*.
-- **A sign-in that strands the player is handed back.** YouTube Music's own *Sign in* runs Google's
-  sign-in in the player itself, and Google can finish it on a Google page (myaccount.google.com, say)
-  without the trip through www.youtube.com that signs YouTube in. When the player finishes loading
-  such a page, the app loads YouTube Music's own sign-in entry, which completes with no prompt while
-  the Google session is fresh and lands back on music.youtube.com. If that strands too, it goes to
-  the home page and tries no more.
+  console flashes once and the setup button turns to *Sign in to YouTube Music*.
 
 ## Fades
 
@@ -112,7 +86,7 @@ the plugin applies its own setting to all of them.
   lets the pause land, then rises from silence. One fade runs at a time, and the full-level push
   when the session appears stands aside for it.
 - **"Are you still there?" recovery is not faded**: the level was never lowered, so play is
-  pressed at it, as before.
+  pressed at it.
 
 ## One-time setup (Windows)
 
@@ -169,13 +143,12 @@ song and will be named on Windows; on macOS the page itself says it is an advert
   ~50ms on Windows, ~1s on macOS) and presses play again a second later. A track ending and the next one buffering is not
   such a pause, and is held back rather than shown as Stopped. This also overrides a host who
   presses pause in the app's own window. Turn the setting off if that matters more.
-- **Skip relies on YouTube Music's own media-session handlers** on Windows, which YouTube has
-  broken before. On macOS it is the player's own `nextVideo()`, which YouTube can rename too: the
+- **Skip relies on YouTube Music's own media-session handlers** on Windows, which a YouTube
+  update can break. On macOS it is the player's own `nextVideo()`, which YouTube can rename too: the
   page script is the part to fix when a YouTube Music update breaks control.
 - **macOS: a skip during an advert skips the advert's song as well**, as the app's own Next does.
 - **macOS: the sign-in state is a guess until the page has said.** Before the app has run this
   session, a data store that exists is taken as signed in.
-- **macOS: the app has the generic app icon.** It carries no YouTube artwork.
 - **A playlist change applies the next time the app has nothing loaded.** On Windows the media
   transport cannot navigate the app; on macOS an open window with nothing playing is pointed at the
   list.
@@ -184,52 +157,40 @@ song and will be named on Windows; on macOS the page itself says it is an advert
 
 ## Building
 
-The plugin compiles against the published `KHost.Abstractions` / `KHost.Common` packages. While
-they are unreleased, pack them into the local feed from a KHost checkout
-(`./build/pack-contracts.sh`, see KHost's AGENTS.md).
+The plugin compiles against the `KHost.Abstractions` / `KHost.Common` packages, which are not on
+nuget.org. Pack them into the local feed from a KHost checkout (`./build/pack-contracts.sh`, see
+KHost's AGENTS.md).
 
 ```bash
 dotnet build KHost.Plugins.YouTubeMusic.slnx
 dotnet test tests/KHost.Plugins.YouTubeMusic.Tests
 ```
 
-There are two builds, released separately for each platform; the catalog hands each host the one
-for its platform, preferring a platform build over the portable one:
+There are two builds, released separately; the catalog hands each host the one for its platform:
 
-- **`net10.0`, the portable build**, released with no `Rid`. It carries the macOS app, in
-  `helper/YouTube Music.app` beside the plugin's files, and is what a Mac (and Linux) installs.
-- **`net10.0-windows10.0.19041.0`, the Windows build**, released as `--rid win`. It carries the
-  WinRT projection for the media transport.
+- **`net10.0`**, released as `--rid macos`. It carries the app in `helper/YouTube Music.app` beside
+  the plugin's files.
+- **`net10.0-windows10.0.19041.0`**, released as `--rid win`. It carries the WinRT projection for the
+  media transport (embedded with CsWinRT, so it cannot clash with another plugin's WinRT runtime,
+  as the Spotify provider's would). It builds **only on Windows**. A Windows release is built with
+  `-p:SkipMacHelper=true`, so it has no `helper/`.
 
-The Windows target builds **only on Windows**, so cut the `win` release there; a Mac or Linux build
-produces `net10.0` alone. Its projection is embedded (CsWinRT's `CsWinRTEmbedded`): the WinRT
-runtime and only the `Windows.Media.Control` types it needs are compiled into the plugin's own dll, generated by
-`cswinrt.exe`, a Windows program. It is embedded because the shipped `WinRT.Runtime.dll` registers
-one COM wrapper for the whole process: beside another plugin that ships its own copy (the Spotify
-provider does), whichever reached the media session second failed with "Attempt to update previously
-set global instance" and lost its live view of YouTube Music.
+How the app gets into a build:
 
-- **On a Mac with the Xcode command line tools** (`xcode-select --install`), the build compiles the
-  app from `helpers/macos/` through `helpers/macos/build.sh` (`xcrun swiftc` for arm64 and x86_64,
-  `lipo`, an ad-hoc `codesign`), once per target framework and only when the sources changed.
-- **Anywhere else** (or with `-p:MacHelperFromSource=false`), it ships the copy committed under
-  `helpers/macos/prebuilt/`, and only while `helpers/macos/prebuilt/sources.sha256` still matches the
-  sources; otherwise the build fails rather than ship a stale app. `-p:SkipMacHelper=true` builds
-  without the app at all, for a build that will not play on a Mac.
+- **On a Mac with the Xcode command line tools** (`xcode-select --install`), it is compiled from
+  `helpers/macos/` by `helpers/macos/build.sh`.
+- **Anywhere else** (or with `-p:MacHelperFromSource=false`), the build ships the copy committed under
+  `helpers/macos/prebuilt/`, and fails if `prebuilt/sources.sha256` no longer matches the sources.
+  `-p:SkipMacHelper=true` builds without the app at all.
 - **After changing anything in `helpers/macos/`**, run `helpers/macos/build.sh --prebuilt` on a Mac
-  and commit `helpers/macos/prebuilt/` with the change. The Swift build is reproducible, so a
-  rebuild from unchanged sources is byte-identical. `PrebuiltHelperTests` fails until the stamp
-  matches, so a release made on Windows can never carry an app older than its sources.
-- `.gitattributes` keeps `helpers/macos/` byte-exact on every checkout; a CRLF conversion would
-  fail the stamp.
-
-The built app is about 400 KB.
+  and commit `helpers/macos/prebuilt/` with the change. `.gitattributes` keeps that folder
+  byte-exact on every checkout.
 
 ## Installing
 
-Copy the build output for this machine's platform (entry dll, `manifest.json`, `.deps.json`, and on
-a Mac `helper/`) into a folder under KHost's `plugins/` directory, enable it on the Plugins page, and
-restart KHost: the Windows build on Windows, the portable `net10.0` build on a Mac.
+From a host: Plugins → Available, then restart KHost. By hand: unzip the release for this platform
+(`-macos` or `-win`) into its own folder under KHost's `plugins/`, enable it on the Plugins page,
+and restart.
 
 ## Cleanup (macOS)
 
