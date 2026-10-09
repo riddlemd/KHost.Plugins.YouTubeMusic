@@ -10,7 +10,7 @@
     <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('Windows'))">net10.0;net10.0-windows10.0.19041.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.1.3</Version>
+    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <!-- Embedded, not the shipped WinRT.Runtime.dll: that assembly registers one ComWrappers for the
@@ -59,8 +59,8 @@
   <ItemGroup>
     <!-- Not ExcludeAssets="runtime": the package's own build/ targets already keep both out of this
          plugin's output, and excluding runtime here would strip them from the test project too. -->
-    <PackageReference Include="KHost.Abstractions" Version="0.51.0" />
-    <PackageReference Include="KHost.Common" Version="0.51.0" />
+    <PackageReference Include="KHost.Abstractions" Version="0.53.0" />
+    <PackageReference Include="KHost.Common" Version="0.53.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />
   </ItemGroup>
 
