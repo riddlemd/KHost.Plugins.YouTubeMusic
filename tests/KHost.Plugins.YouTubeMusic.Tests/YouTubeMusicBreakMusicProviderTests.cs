@@ -20,6 +20,7 @@ public class YouTubeMusicBreakMusicProviderTests
     private readonly IPluginContext _context = Substitute.For<IPluginContext>();
     private readonly IMessageBroker _broker = Substitute.For<IMessageBroker>();
     private readonly IFlashService _flash = Substitute.For<IFlashService>();
+    private readonly IBreakMusicSettings _breakMusic = Substitute.For<IBreakMusicSettings>();
     private readonly ManualClock _clock = new();
 
     /// <summary>Called with each delay the provider takes, after the clock has moved past it.</summary>
@@ -28,12 +29,13 @@ public class YouTubeMusicBreakMusicProviderTests
     /// <summary>A task to wait on instead of returning at once; null lets the delay pass.</summary>
     private Func<TimeSpan, CancellationToken, Task?>? _holdDelay;
 
-    private YouTubeMusicBreakMusicProvider Build(YouTubeMusicSettings? settings = null)
+    private YouTubeMusicBreakMusicProvider Build(YouTubeMusicSettings? settings = null, TimeSpan? fade = null)
     {
+        _breakMusic.FadeDuration.Returns(fade ?? TimeSpan.FromMilliseconds(1500));
         _context.BindSettings<YouTubeMusicSettings>().Returns(settings ?? new YouTubeMusicSettings());
 
         return new YouTubeMusicBreakMusicProvider(
-            NullLogger<YouTubeMusicBreakMusicProvider>.Instance, _context, _controller, _broker, _flash, _clock,
+            NullLogger<YouTubeMusicBreakMusicProvider>.Instance, _context, _controller, _breakMusic, _broker, _flash, _clock,
             (span, token) =>
             {
                 _clock.Advance(span);
@@ -60,10 +62,10 @@ public class YouTubeMusicBreakMusicProviderTests
         Assert.True(condition(), "Timed out waiting for the level to settle.");
     }
 
-    private static readonly YouTubeMusicSettings NoFade = new() { FadeMilliseconds = 0 };
+    private static readonly TimeSpan NoFade = TimeSpan.Zero;
 
     /// <summary>300ms: three steps, 0.1, 0.01 and 0 down; 0.01, 0.1 and 1 up.</summary>
-    private static readonly YouTubeMusicSettings ShortFade = new() { FadeMilliseconds = 300 };
+    private static readonly TimeSpan ShortFade = TimeSpan.FromMilliseconds(300);
 
     [Fact]
     public async Task StartAsync_AlreadyPlaying_SendsNoCommandButTheLevel()
@@ -81,7 +83,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = Paused;
 
-        Assert.True(await Build(new YouTubeMusicSettings { PlaylistUrl = Playlist, FadeMilliseconds = 0 }).StartAsync());
+        Assert.True(await Build(new YouTubeMusicSettings { PlaylistUrl = Playlist }, NoFade).StartAsync());
         Assert.Equal(["play", "level:1"], _controller.Calls);
     }
 
@@ -91,7 +93,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = SessionSnapshot.None;
         _controller.OnCommand = command => command.StartsWith("launch:", StringComparison.Ordinal) ? Playing : null;
 
-        Assert.True(await Build(new YouTubeMusicSettings { PlaylistUrl = Playlist, FadeMilliseconds = 0 }).StartAsync());
+        Assert.True(await Build(new YouTubeMusicSettings { PlaylistUrl = Playlist }, NoFade).StartAsync());
         Assert.Equal(["launch:https://music.youtube.com/watch?list=PLbed", "level:1"], _controller.Calls);
     }
 
@@ -101,7 +103,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = SessionSnapshot.None;
         _controller.OnCommand = command => command.StartsWith("launch:", StringComparison.Ordinal) ? Paused : null;
 
-        Assert.True(await Build(NoFade).StartAsync());
+        Assert.True(await Build(fade: NoFade).StartAsync());
         Assert.Equal(["launch:", "play", "level:1"], _controller.Calls);
     }
 
@@ -203,9 +205,42 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = Playing;
         _controller.OnCommand = command => command == "pause" ? Paused : null;
 
-        await Build(ShortFade).StopAsync(TimeSpan.FromSeconds(2));
+        await Build(fade: ShortFade).StopAsync(TimeSpan.FromSeconds(2));
 
         Assert.Equal(["level:1", "level:0.1", "level:0.01", "level:0", "pause", "level:1"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task PauseAsync_FadeChangedAfterConstruction_NextFadeUsesTheNewLength()
+    {
+        _controller.Snapshot = Playing;
+        _controller.OnCommand = command => command == "pause" ? Paused : null;
+        var provider = Build(fade: NoFade);
+        await provider.PauseAsync();
+        _controller.Calls.Clear();
+        _controller.Snapshot = Playing;
+
+        _breakMusic.FadeDuration.Returns(ShortFade);
+        await provider.PauseAsync();
+
+        Assert.Equal(["level:1", "level:0.1", "level:0.01", "level:0", "pause", "level:1"], _controller.Calls);
+    }
+
+    [Fact]
+    public async Task ResumeAsync_FadeChangedAfterConstruction_NextRiseUsesTheNewLength()
+    {
+        _controller.Snapshot = Paused;
+        _controller.OnCommand = command => command == "play" ? Playing : null;
+        var provider = Build(fade: NoFade);
+        await provider.ResumeAsync();
+        _controller.Calls.Clear();
+        _controller.Snapshot = Paused;
+
+        _breakMusic.FadeDuration.Returns(ShortFade);
+        await provider.ResumeAsync();
+        await UntilAsync(() => _controller.Calls.Count == 5);
+
+        Assert.Equal(["level:0", "play", "level:0.01", "level:0.1", "level:1"], _controller.Calls);
     }
 
     // The host no longer sets a level; one arriving from an old caller must not reach the mixer.
@@ -214,7 +249,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = Playing;
         _controller.OnCommand = command => command == "pause" ? Paused : null;
-        var provider = Build(ShortFade);
+        var provider = Build(fade: ShortFade);
 
         await provider.SetVolumeAsync(0.15f);
         await provider.StopAsync(TimeSpan.FromSeconds(2));
@@ -322,7 +357,7 @@ public class YouTubeMusicBreakMusicProviderTests
         var release = new TaskCompletionSource();
         var seen = 0;
         _holdDelay = (span, _) => span == FadeCurve.StepInterval && ++seen == 2 ? release.Task : null;
-        var provider = Build(ShortFade);
+        var provider = Build(fade: ShortFade);
 
         var pausing = provider.PauseAsync();
         await UntilAsync(() => _controller.Calls.Count == 2);
@@ -341,7 +376,7 @@ public class YouTubeMusicBreakMusicProviderTests
         var release = new TaskCompletionSource();
         var seen = 0;
         _holdDelay = (span, _) => span == FadeCurve.StepInterval && ++seen == 2 ? release.Task : null;
-        var provider = Build(ShortFade);
+        var provider = Build(fade: ShortFade);
 
         await provider.ResumeAsync();
         _controller.RaiseSessionChanged();
@@ -383,7 +418,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = Playing;
 
-        await Build(new YouTubeMusicSettings { FadeMilliseconds = 0 }).StopAsync(TimeSpan.FromSeconds(2));
+        await Build(fade: NoFade).StopAsync(TimeSpan.FromSeconds(2));
 
         Assert.Equal(["pause"], _controller.Calls);
     }
@@ -435,7 +470,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = Playing;
         _controller.OnCommand = command => command == "pause" ? Paused : null;
 
-        await Build(ShortFade).PauseAsync();
+        await Build(fade: ShortFade).PauseAsync();
 
         Assert.Equal(["level:1", "level:0.1", "level:0.01", "level:0", "pause", "level:1"], _controller.Calls);
     }
@@ -445,7 +480,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = Playing;
 
-        await Build(NoFade).PauseAsync();
+        await Build(fade: NoFade).PauseAsync();
 
         Assert.Equal(["pause"], _controller.Calls);
     }
@@ -455,7 +490,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = Paused;
 
-        await Build(ShortFade).PauseAsync();
+        await Build(fade: ShortFade).PauseAsync();
 
         Assert.Equal(["pause"], _controller.Calls);
     }
@@ -468,7 +503,7 @@ public class YouTubeMusicBreakMusicProviderTests
         using var cancel = new CancellationTokenSource();
         _onDelay = _ => cancel.Cancel();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Build(ShortFade).PauseAsync(cancel.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Build(fade: ShortFade).PauseAsync(cancel.Token));
 
         Assert.Equal(["level:1", "pause", "level:1"], _controller.Calls);
     }
@@ -479,7 +514,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = Paused;
 
-        await Build(ShortFade).ResumeAsync();
+        await Build(fade: ShortFade).ResumeAsync();
         await UntilAsync(() => _controller.Calls.Count == 5);
 
         Assert.Equal(["level:0", "play", "level:0.01", "level:0.1", "level:1"], _controller.Calls);
@@ -490,7 +525,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = Paused;
 
-        await Build(NoFade).ResumeAsync();
+        await Build(fade: NoFade).ResumeAsync();
 
         Assert.Equal(["play", "level:1"], _controller.Calls);
     }
@@ -500,7 +535,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = Paused;
 
-        Assert.True(await Build(ShortFade).StartAsync());
+        Assert.True(await Build(fade: ShortFade).StartAsync());
         Assert.Equal(["level:0", "play", "level:0.01", "level:0.1", "level:1"], _controller.Calls);
     }
 
@@ -511,7 +546,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = SessionSnapshot.None;
         _controller.OnCommand = command => command.StartsWith("launch:", StringComparison.Ordinal) ? Playing : null;
 
-        Assert.True(await Build(ShortFade).StartAsync());
+        Assert.True(await Build(fade: ShortFade).StartAsync());
         Assert.Equal(["launch:", "level:0", "level:0.01", "level:0.1", "level:1"], _controller.Calls);
     }
 
@@ -522,7 +557,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = Paused;
         _controller.CommandsSucceed = false;
 
-        await Assert.ThrowsAsync<KHostException>(() => Build(ShortFade).StartAsync());
+        await Assert.ThrowsAsync<KHostException>(() => Build(fade: ShortFade).StartAsync());
 
         Assert.Equal(["level:0", "play", "level:1"], _controller.Calls);
     }
@@ -533,7 +568,7 @@ public class YouTubeMusicBreakMusicProviderTests
         _controller.Snapshot = Paused;
         _controller.CommandsSucceed = false;
 
-        await Assert.ThrowsAsync<KHostException>(() => Build(ShortFade).ResumeAsync());
+        await Assert.ThrowsAsync<KHostException>(() => Build(fade: ShortFade).ResumeAsync());
 
         Assert.Equal(["level:0", "play", "level:1"], _controller.Calls);
     }
@@ -544,7 +579,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = Paused;
         _controller.OnCommand = command => command switch { "play" => Playing, "pause" => Paused, _ => null };
-        var provider = Build(ShortFade);
+        var provider = Build(fade: ShortFade);
         HoldFadeStep(2);
 
         await provider.ResumeAsync();
@@ -560,7 +595,7 @@ public class YouTubeMusicBreakMusicProviderTests
     {
         _controller.Snapshot = Playing;
         _controller.OnCommand = command => command switch { "play" => Playing, "pause" => Paused, _ => null };
-        var provider = Build(ShortFade);
+        var provider = Build(fade: ShortFade);
         HoldFadeStep(2);
 
         var pausing = provider.PauseAsync();
@@ -664,7 +699,7 @@ public class YouTubeMusicBreakMusicProviderTests
     [Fact]
     public async Task SessionChanged_PausedByTheHost_IsNotRecovered()
     {
-        var provider = Build(NoFade);
+        var provider = Build(fade: NoFade);
         _controller.Snapshot = Playing;
         _controller.RaiseSessionChanged();
 

@@ -69,9 +69,9 @@ and the fade curve are shared.
 
 ## Fades
 
-Every fade runs on one equal-decibel curve, a step every 100ms, over the *Fade length* setting
-(default 1500ms; 0 cuts at once both ways). The host passes no fade length to pause or resume, so
-the plugin applies its own setting to all of them.
+Every fade runs on one equal-decibel curve, a step every 100ms, over the length set in KHost's
+*App Settings → Break music → Fade* (0 cuts at once both ways). The plugin reads it afresh at every
+fade, so a change applies from the next one.
 
 - **Pause, and stop when a singer starts:** the level steps down to silence, the app pauses, and
   full level is put back so the next start is not silent. A cancelled fade still pauses and
@@ -121,7 +121,6 @@ song and will be named on Windows; on macOS the page itself says it is an advert
 |---|---|---|
 | Playlist | blank | A YouTube Music link. Blank resumes whatever the app has loaded. |
 | Open YouTube Music if it is not already running | on | |
-| Fade length (ms) | 1500 | Down on pause and when a singer starts, up on play and resume. 0 cuts at once. Stored as `fadeMilliseconds`. |
 | Press play again when YouTube Music pauses by itself | on | See below. |
 | Edge profile folder | blank | Windows only. Blank uses `%LOCALAPPDATA%\KHost\youtube-music-profile`. macOS has nothing to set: the app keeps its own data store. |
 

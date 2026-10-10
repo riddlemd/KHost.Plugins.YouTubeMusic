@@ -9,10 +9,6 @@ public class YouTubeMusicSettings
 
     public bool LaunchIfNotRunning { get; set; } = true;
 
-    /// <summary>Milliseconds, for every fade: down on pause and stop, up on start and resume. Zero
-    /// cuts at once both ways. The key predates the fade-in; renaming it would lose saved values.</summary>
-    public int FadeMilliseconds { get; set; } = 1500;
-
     /// <summary>Also overrides a host pressing pause in the app's own window, which this plugin
     /// cannot tell apart from YouTube Music's idle prompt.</summary>
     public bool RecoverUnexpectedPause { get; set; } = true;

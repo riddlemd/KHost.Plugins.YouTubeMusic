@@ -7,13 +7,12 @@
   "description": "Plays break music through YouTube Music on this machine: the app installed in Microsoft Edge on Windows, or KHost's own YouTube Music app on macOS.",
   "icon": "youtube",
   "entryAssembly": "KHost.Plugins.YouTubeMusic.dll",
-  "apiVersion": 1,
+  "apiVersion": 4,
   "settings": [
-    { "key": "playlistUrl", "type": "string", "section": "Break music", "label": "Playlist (YouTube Music link — blank resumes whatever the app has loaded)" },
+    { "key": "playlistUrl", "type": "string", "section": "Break music", "label": "Playlist", "optional": true, "description": "A YouTube Music link. Blank resumes whatever the app has loaded." },
     { "key": "launchIfNotRunning", "type": "bool", "section": "Break music", "label": "Open YouTube Music if it is not already running", "default": true },
-    { "key": "fadeMilliseconds", "type": "int", "section": "Break music", "label": "Fade length in milliseconds: down on pause and when a singer starts, up on play and resume (0 cuts at once)", "default": 1500 },
-    { "key": "recoverUnexpectedPause", "type": "bool", "section": "Break music", "label": "Press play again when YouTube Music pauses by itself (\"Are you still there?\")", "default": true },
-    { "key": "profileDirectory", "type": "string", "section": "Browser profile", "label": "Edge profile folder for YouTube Music, Windows only (blank uses KHost's own)" }
+    { "key": "recoverUnexpectedPause", "type": "bool", "section": "Break music", "label": "Press play again when YouTube Music pauses by itself", "description": "Answers its \"Are you still there?\" prompt.", "default": true },
+    { "key": "profileDirectory", "type": "string", "section": "Browser profile", "label": "Edge profile folder", "optional": true, "description": "Windows only. Blank uses KHost's own." }
   ],
   "buttons": [
     { "key": "setup", "label": "Set up YouTube Music", "icon": "box-arrow-up-right" },

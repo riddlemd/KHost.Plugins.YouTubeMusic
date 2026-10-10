@@ -59,8 +59,8 @@
   <ItemGroup>
     <!-- Not ExcludeAssets="runtime": the package's own build/ targets already keep both out of this
          plugin's output, and excluding runtime here would strip them from the test project too. -->
-    <PackageReference Include="KHost.Abstractions" Version="0.53.0" />
-    <PackageReference Include="KHost.Common" Version="0.53.0" />
+    <PackageReference Include="KHost.Abstractions" Version="0.56.0" />
+    <PackageReference Include="KHost.Common" Version="0.56.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />
   </ItemGroup>
 

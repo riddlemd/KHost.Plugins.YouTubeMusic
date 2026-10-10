@@ -64,8 +64,11 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly string? _startUrl;
     private readonly bool _launchIfNotRunning;
-    private readonly TimeSpan _fade;
+    private readonly IBreakMusicSettings _breakMusic;
     private readonly bool _recoverUnexpectedPause;
+
+    // The host changes this while running, so each fade reads it fresh.
+    private TimeSpan Fade => TimeSpan.FromTicks(Math.Max(0, _breakMusic.FadeDuration.Ticks));
 
     /// <summary>One operation moves the level at a time. Taking it first cuts short whatever ramp is
     /// running, so two ramps never fight and the newcomer carries on from where that one stopped.</summary>
@@ -100,8 +103,8 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     public YouTubeMusicBreakMusicProvider(
         ILogger<YouTubeMusicBreakMusicProvider> logger, IPluginContext context, IMessageBroker broker,
-        IFlashService flashService, IHostDirectories directories)
-        : this(logger, context, controller: null, broker, flashService, binDirectory: directories.BinDirectory)
+        IFlashService flashService, IHostDirectories directories, IBreakMusicSettings breakMusic)
+        : this(logger, context, controller: null, breakMusic, broker, flashService, binDirectory: directories.BinDirectory)
     {
     }
 
@@ -109,6 +112,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         ILogger<YouTubeMusicBreakMusicProvider> logger,
         IPluginContext context,
         IYouTubeMusicController? controller,
+        IBreakMusicSettings breakMusic,
         IMessageBroker? broker = null,
         IFlashService? flashService = null,
         TimeProvider? time = null,
@@ -117,6 +121,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     {
         _logger = logger;
         _context = context;
+        _breakMusic = breakMusic;
         _broker = broker;
         _flash = flashService;
         _time = time ?? TimeProvider.System;
@@ -126,7 +131,6 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
         _startUrl = PlaylistUrl.Normalize(settings.PlaylistUrl);
         _launchIfNotRunning = settings.LaunchIfNotRunning;
-        _fade = TimeSpan.FromMilliseconds(Math.Max(0, settings.FadeMilliseconds));
         _recoverUnexpectedPause = settings.RecoverUnexpectedPause;
 
         _controller = controller ?? YouTubeMusicControllerFactory.ForCurrentPlatform(
@@ -500,7 +504,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         {
             // A fresh launch sounds before anything can reach its level, so the rise starts from
             // the moment it is heard.
-            var steps = FadeCurve.RiseSteps(_fade);
+            var steps = FadeCurve.RiseSteps(Fade);
 
             if (steps.Count > 0 && await SetLevelAsync(0f, cancellationToken))
                 BeginRise(steps, rampToken);
@@ -517,7 +521,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     /// <summary>Silent before play, so the first thing the room hears is the bottom of the rise.</summary>
     private async Task<bool> PlayRisingAsync(CancellationToken rampToken, CancellationToken cancellationToken)
     {
-        var steps = FadeCurve.RiseSteps(_fade);
+        var steps = FadeCurve.RiseSteps(Fade);
 
         // A mixer with nothing to hold yet (Edge before its first sound) plays at the level instead.
         var rising = steps.Count > 0 && await SetLevelAsync(0f, cancellationToken);
@@ -584,7 +588,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
             try
             {
                 var playing = (await _controller.ReadAsync(cancellationToken))?.Playback == SessionPlayback.Playing;
-                IReadOnlyList<float> steps = playing && fade ? FadeCurve.GainSteps(_fade) : [];
+                IReadOnlyList<float> steps = playing && fade ? FadeCurve.GainSteps(Fade) : [];
 
                 // From wherever a rise cut short left it.
                 var from = float.IsNaN(_applied) ? FullLevel : _applied;
