@@ -21,7 +21,10 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
     private static readonly TimeSpan CoalesceWindow = TimeSpan.FromMilliseconds(100);
 
     private readonly ILogger _logger;
-    private readonly string _profileDirectory;
+    private readonly Func<string> _profile;
+
+    // Read at each use: the host applies a saved profile folder while Edge may already be running.
+    private string ProfileDirectory => _profile();
     private readonly string? _edgePath;
     private readonly TimeProvider _time;
     private readonly SessionSightings _sightings = new();
@@ -32,10 +35,10 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
     private HashSet<int> _audioProcessIds = [];
     private int _raiseGeneration;
 
-    public WindowsYouTubeMusicController(ILogger logger, string profileDirectory, TimeProvider? time = null)
+    public WindowsYouTubeMusicController(ILogger logger, Func<string> profileDirectory, TimeProvider? time = null)
     {
         _logger = logger;
-        _profileDirectory = profileDirectory;
+        _profile = profileDirectory;
         _time = time ?? TimeProvider.System;
         _edgePath = EdgeLocator.Find(
             EdgeLocator.Candidates(
@@ -63,14 +66,14 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
         + "YouTube Music\", sign in, then install it from the \"App available\" icon in Edge's address bar.";
 
     public bool IsBrowserRunning
-        => ProcessCommandLine.Find("msedge", line => EdgeCommandLine.IsBrowserFor(line, _profileDirectory)).Count > 0;
+        => ProcessCommandLine.Find("msedge", line => EdgeCommandLine.IsBrowserFor(line, ProfileDirectory)).Count > 0;
 
     public SetupStatus GetSetupStatus()
     {
         if (_edgePath is null)
             return SetupStatus.BrowserNotFound;
 
-        return EdgeProfile.HasYouTubeMusicApp(_profileDirectory) ? SetupStatus.Ready : SetupStatus.AppNotInstalled;
+        return EdgeProfile.HasYouTubeMusicApp(ProfileDirectory) ? SetupStatus.Ready : SetupStatus.AppNotInstalled;
     }
 
     public async Task StartWatchingAsync(CancellationToken cancellationToken = default)
@@ -130,7 +133,7 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
     public Task<bool> LaunchAppAsync(string? startUrl, CancellationToken cancellationToken = default)
     {
         var before = ForegroundWindow.Current();
-        var launched = Launch(EdgeArguments.ForApp(_profileDirectory, startUrl));
+        var launched = Launch(profile => EdgeArguments.ForApp(profile, startUrl));
 
         // Not awaited: the start goes on to wait for the session while the window comes up.
         if (launched)
@@ -141,10 +144,10 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
 
     /// <summary>Overridden so the window the host asked to see is not sent behind again.</summary>
     public Task<bool> ShowAppAsync(CancellationToken cancellationToken = default)
-        => Task.FromResult(Launch(EdgeArguments.ForApp(_profileDirectory, startUrl: null)));
+        => Task.FromResult(Launch(profile => EdgeArguments.ForApp(profile, startUrl: null)));
 
     public Task<bool> OpenSetupAsync(CancellationToken cancellationToken = default)
-        => Task.FromResult(Launch(EdgeArguments.ForSetup(_profileDirectory)));
+        => Task.FromResult(Launch(EdgeArguments.ForSetup));
 
     public async Task<bool> PlayAsync(CancellationToken cancellationToken = default)
         => await FindSessionAsync(cancellationToken) is { } session && await session.TryPlayAsync().AsTask(cancellationToken);
@@ -165,7 +168,7 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
                 return Task.FromResult(true);
 
             _audioProcessIds = ProcessCommandLine.Find(
-                "msedge", line => EdgeCommandLine.IsAudioServiceFor(line, _profileDirectory));
+                "msedge", line => EdgeCommandLine.IsAudioServiceFor(line, ProfileDirectory));
 
             return Task.FromResult(CoreAudio.SetLevel(_audioProcessIds, level));
         }
@@ -228,14 +231,15 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
             TaskScheduler.Default);
     }
 
-    private bool Launch(IReadOnlyList<string> arguments)
+    private bool Launch(Func<string, IReadOnlyList<string>> argumentsFor)
     {
         if (_edgePath is null)
             return false;
 
         try
         {
-            Directory.CreateDirectory(_profileDirectory);
+            var profile = ProfileDirectory;
+            Directory.CreateDirectory(profile);
 
             var start = new ProcessStartInfo(_edgePath)
             {
@@ -244,7 +248,7 @@ internal sealed class WindowsYouTubeMusicController : IYouTubeMusicController
                 RedirectStandardError = true,
             };
 
-            foreach (var argument in arguments)
+            foreach (var argument in argumentsFor(profile))
                 start.ArgumentList.Add(argument);
 
             var process = Process.Start(start);

@@ -6,6 +6,7 @@ using KHost.Abstractions.Services;
 using KHost.Plugins.YouTubeMusic.Audio;
 using KHost.Plugins.YouTubeMusic.Control;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace KHost.Plugins.YouTubeMusic.Tests;
 
@@ -29,13 +30,27 @@ public class YouTubeMusicBreakMusicProviderTests
     /// <summary>A task to wait on instead of returning at once; null lets the delay pass.</summary>
     private Func<TimeSpan, CancellationToken, Task?>? _holdDelay;
 
+    private readonly IDisposable _subscription = Substitute.For<IDisposable>();
+
+    private readonly IOptionsMonitor<YouTubeMusicSettings> _options = Substitute.For<IOptionsMonitor<YouTubeMusicSettings>>();
+
+    /// <summary>The listener the provider gave <c>OnChange</c>; calling it is the host announcing a save.</summary>
+    private Action<YouTubeMusicSettings, string?>? _settingsChanged;
+
+    /// <summary>What the host's save does: later reads answer with the new values.</summary>
+    private void Save(YouTubeMusicSettings settings)
+        => _options.CurrentValue.Returns(settings);
+
+    private void RaiseChanged() => _settingsChanged!(_options.CurrentValue, null);
+
     private YouTubeMusicBreakMusicProvider Build(YouTubeMusicSettings? settings = null, TimeSpan? fade = null)
     {
         _breakMusic.FadeDuration.Returns(fade ?? TimeSpan.FromMilliseconds(1500));
-        _context.BindSettings<YouTubeMusicSettings>().Returns(settings ?? new YouTubeMusicSettings());
+        Save(settings ?? new YouTubeMusicSettings());
+        _options.OnChange(Arg.Do<Action<YouTubeMusicSettings, string?>>(listener => _settingsChanged = listener)).Returns(_subscription);
 
         return new YouTubeMusicBreakMusicProvider(
-            NullLogger<YouTubeMusicBreakMusicProvider>.Instance, _context, _controller, _breakMusic, _broker, _flash, _clock,
+            NullLogger<YouTubeMusicBreakMusicProvider>.Instance, _context, _options, _controller, _breakMusic, _broker, _flash, _clock,
             (span, token) =>
             {
                 _clock.Advance(span);
@@ -187,6 +202,109 @@ public class YouTubeMusicBreakMusicProviderTests
         await Assert.ThrowsAsync<KHostException>(() => provider.StartAsync());
         Assert.Equal(BreakMusicPlayback.Stopped, await provider.ReadPlaybackAsync());
         Assert.Empty(_controller.Calls);
+    }
+
+    [Fact]
+    public async Task StartAsync_LaunchSettingSavedAfterConstruction_AppliesOnTheNextStart()
+    {
+        _controller.Snapshot = SessionSnapshot.None;
+        _controller.OnCommand = command => command.StartsWith("launch:", StringComparison.Ordinal) ? Playing : null;
+        var provider = Build(new YouTubeMusicSettings { LaunchIfNotRunning = false });
+
+        await Assert.ThrowsAsync<KHostException>(() => provider.StartAsync());
+
+        Save(new YouTubeMusicSettings { LaunchIfNotRunning = true });
+
+        Assert.True(await provider.StartAsync());
+        Assert.Contains("launch:", _controller.Calls);
+    }
+
+    [Fact]
+    public async Task StartAsync_PlaylistSavedAfterConstruction_LaunchesAtTheNewOne()
+    {
+        _controller.Snapshot = SessionSnapshot.None;
+        _controller.OnCommand = command => command.StartsWith("launch:", StringComparison.Ordinal) ? Playing : null;
+        var provider = Build(fade: NoFade);
+
+        Save(new YouTubeMusicSettings { PlaylistUrl = Playlist });
+
+        Assert.True(await provider.StartAsync());
+        Assert.Equal(["launch:https://music.youtube.com/watch?list=PLbed", "level:1"], _controller.Calls);
+    }
+
+    [Fact]
+    public void SessionChanged_RecoverySavedOnAfterConstruction_PressesPlay()
+    {
+        Build(new YouTubeMusicSettings { RecoverUnexpectedPause = false });
+        Save(new YouTubeMusicSettings { RecoverUnexpectedPause = true });
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+
+        _controller.Snapshot = Paused;
+        _controller.RaiseSessionChanged();
+
+        Assert.Equal(["level:1", "play"], _controller.Calls);
+    }
+
+    [Fact]
+    public void SettingsChanged_RecoverySavedOffAfterConstruction_LeavesItPaused()
+    {
+        Build();
+        Save(new YouTubeMusicSettings { RecoverUnexpectedPause = false });
+        _controller.Snapshot = Playing;
+        _controller.RaiseSessionChanged();
+
+        _controller.Snapshot = Paused;
+        _controller.RaiseSessionChanged();
+
+        Assert.Equal(["level:1"], _controller.Calls);
+    }
+
+    [Fact]
+    public void SettingsChanged_PlaylistBecomesUnusable_Warns()
+    {
+        Build();
+        Save(new YouTubeMusicSettings { PlaylistUrl = "https://example.com/" });
+
+        RaiseChanged();
+
+        _context.Received(1).AddWarning(Arg.Is<string>(m => m.Contains("not a YouTube Music playlist link")));
+    }
+
+    [Fact]
+    public void SettingsChanged_PlaylistFixed_TakesTheWarningBack()
+    {
+        _context.AddWarning(Arg.Any<string>()).Returns(7);
+        Build(new YouTubeMusicSettings { PlaylistUrl = "https://example.com/" });
+
+        Save(new YouTubeMusicSettings { PlaylistUrl = Playlist });
+        RaiseChanged();
+
+        _context.Received(1).ClearWarning(7);
+        _context.Received(1).AddWarning(Arg.Any<string>());
+    }
+
+    // The profile folder decides whether the app is installed, and a save can point it at another.
+    [Fact]
+    public void SettingsChanged_SetupStatusMovedWithTheSave_RedrawsTheRowAtOnce()
+    {
+        _controller.Status = SetupStatus.AppNotInstalled;
+        var provider = Build();
+        _broker.ClearReceivedCalls();
+
+        _controller.Status = SetupStatus.Ready;
+        RaiseChanged();
+
+        _broker.Received(1).Announce(Arg.Any<PluginsChanged>());
+        Assert.True(provider.DescribeButton(YouTubeMusicBreakMusicProvider.OpenButton).Visible);
+    }
+
+    [Fact]
+    public void Dispose_Always_StopsListeningForSaves()
+    {
+        Build().Dispose();
+
+        _subscription.Received(1).Dispose();
     }
 
     [Fact]

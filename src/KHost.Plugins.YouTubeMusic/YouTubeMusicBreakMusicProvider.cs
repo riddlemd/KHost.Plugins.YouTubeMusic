@@ -6,6 +6,7 @@ using KHost.Abstractions.Services;
 using KHost.Plugins.YouTubeMusic.Audio;
 using KHost.Plugins.YouTubeMusic.Control;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace KHost.Plugins.YouTubeMusic;
 
@@ -62,10 +63,13 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     private readonly SignInWatch _signIn = new();
     private readonly TimeProvider _time;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
-    private readonly string? _startUrl;
-    private readonly bool _launchIfNotRunning;
     private readonly IBreakMusicSettings _breakMusic;
-    private readonly bool _recoverUnexpectedPause;
+    private readonly IOptionsMonitor<YouTubeMusicSettings> _options;
+    private readonly IDisposable? _settingsSubscription;
+
+    // Read at each use: a save reaches CurrentValue while the plugin runs.
+    private YouTubeMusicSettings Settings => _options.CurrentValue;
+    private string? StartUrl => PlaylistUrl.Normalize(Settings.PlaylistUrl);
 
     // The host changes this while running, so each fade reads it fresh.
     private TimeSpan Fade => TimeSpan.FromTicks(Math.Max(0, _breakMusic.FadeDuration.Ticks));
@@ -80,6 +84,9 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     /// <summary>The row's unfinished-setup warning while it shows; 0 when there is none.</summary>
     private int _notSetUpWarning;
+
+    /// <summary>The row's warning about an unusable playlist link while it shows; 0 when there is none.</summary>
+    private int _badPlaylistWarning;
     private Task _fadeIn = Task.CompletedTask;
 
     /// <summary>The app had a media session at the last read. Windows restores the level it last
@@ -102,15 +109,16 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     private ITimer? _setupStatusTimer;
 
     public YouTubeMusicBreakMusicProvider(
-        ILogger<YouTubeMusicBreakMusicProvider> logger, IPluginContext context, IMessageBroker broker,
-        IFlashService flashService, IHostDirectories directories, IBreakMusicSettings breakMusic)
-        : this(logger, context, controller: null, breakMusic, broker, flashService, binDirectory: directories.BinDirectory)
+        ILogger<YouTubeMusicBreakMusicProvider> logger, IPluginContext context, IOptionsMonitor<YouTubeMusicSettings> options,
+        IMessageBroker broker, IFlashService flashService, IHostDirectories directories, IBreakMusicSettings breakMusic)
+        : this(logger, context, options, controller: null, breakMusic, broker, flashService, binDirectory: directories.BinDirectory)
     {
     }
 
     internal YouTubeMusicBreakMusicProvider(
         ILogger<YouTubeMusicBreakMusicProvider> logger,
         IPluginContext context,
+        IOptionsMonitor<YouTubeMusicSettings> options,
         IYouTubeMusicController? controller,
         IBreakMusicSettings breakMusic,
         IMessageBroker? broker = null,
@@ -121,27 +129,18 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     {
         _logger = logger;
         _context = context;
+        _options = options;
         _breakMusic = breakMusic;
         _broker = broker;
         _flash = flashService;
         _time = time ?? TimeProvider.System;
         _delay = delay ?? ((span, token) => Task.Delay(span, _time, token));
 
-        var settings = context.BindSettings<YouTubeMusicSettings>();
-
-        _startUrl = PlaylistUrl.Normalize(settings.PlaylistUrl);
-        _launchIfNotRunning = settings.LaunchIfNotRunning;
-        _recoverUnexpectedPause = settings.RecoverUnexpectedPause;
-
         _controller = controller ?? YouTubeMusicControllerFactory.ForCurrentPlatform(
-            logger, settings.ProfileDirectory, binDirectory ?? throw new ArgumentNullException(nameof(binDirectory)));
+            logger, () => Settings.ProfileDirectory, binDirectory ?? throw new ArgumentNullException(nameof(binDirectory)));
 
-        if (!string.IsNullOrWhiteSpace(settings.PlaylistUrl) && _startUrl is null)
-        {
-            _context.AddWarning(
-                $"'{settings.PlaylistUrl}' is not a YouTube Music playlist link, so break music will "
-                + "resume whatever the app already has loaded instead.");
-        }
+        UpdatePlaylistWarning();
+        _settingsSubscription = _options.OnChange((_, _) => OnSettingsChanged());
 
         if (_controller.Unavailable is { } reason)
         {
@@ -353,7 +352,53 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         };
     }
 
-    public void Dispose() => _setupStatusTimer?.Dispose();
+    public void Dispose()
+    {
+        _settingsSubscription?.Dispose();
+        _setupStatusTimer?.Dispose();
+    }
+
+    /// <summary>Runs on the saving thread. The profile folder decides the setup status and the playlist
+    /// link decides its warning; every other setting is read where it is used.</summary>
+    private void OnSettingsChanged()
+    {
+        try
+        {
+            UpdatePlaylistWarning();
+
+            if (_controller.Unavailable is null)
+            {
+                ForgetSetupStatus();
+                SetupStatusNow();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not apply the saved YouTube Music settings");
+        }
+    }
+
+    private void UpdatePlaylistWarning()
+    {
+        var link = Settings.PlaylistUrl;
+        var unusable = !string.IsNullOrWhiteSpace(link) && PlaylistUrl.Normalize(link) is null;
+
+        lock (_warningSync)
+        {
+            if (_badPlaylistWarning != 0)
+            {
+                _context.ClearWarning(_badPlaylistWarning);
+                _badPlaylistWarning = 0;
+            }
+
+            if (unusable)
+            {
+                _badPlaylistWarning = _context.AddWarning(
+                    $"'{link}' is not a YouTube Music playlist link, so break music will "
+                    + "resume whatever the app already has loaded instead.");
+            }
+        }
+    }
 
     private static bool CanPlay(SetupStatus status) => status is SetupStatus.Ready or SetupStatus.NotSignedIn;
 
@@ -428,7 +473,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
 
     private async Task<bool> LaunchAndPlayAsync(CancellationToken rampToken, CancellationToken cancellationToken)
     {
-        if (!_launchIfNotRunning && !_controller.IsBrowserRunning)
+        if (!Settings.LaunchIfNotRunning && !_controller.IsBrowserRunning)
         {
             _logger.LogInformation("YouTube Music is not running and this plugin is set not to open it");
             throw new KHostException(
@@ -450,7 +495,9 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
                 "KH-YTMUSIC-NOT-SET-UP");
         }
 
-        if (!await _controller.LaunchAppAsync(_startUrl, cancellationToken))
+        var startUrl = StartUrl;
+
+        if (!await _controller.LaunchAppAsync(startUrl, cancellationToken))
         {
             _logger.LogWarning("YouTube Music could not be launched");
             throw new KHostException(
@@ -479,12 +526,12 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
         if (session is not { Playback: not SessionPlayback.None })
         {
             _logger.LogWarning(
-                _startUrl is null
+                startUrl is null
                     ? "YouTube Music opened but nothing started. Set a playlist in this plugin's settings, or start one in the app"
                     : "YouTube Music opened the playlist but nothing started playing within {Wait}",
                 SessionWait);
 
-            if (_startUrl is null)
+            if (startUrl is null)
             {
                 throw new KHostException(
                     "YouTube Music: opened, but nothing started playing. Set a playlist in this plugin's "
@@ -787,7 +834,7 @@ public sealed class YouTubeMusicBreakMusicProvider : IBreakMusicProvider, IPlugi
     {
         var noticed = _time.GetUtcNow();
 
-        if (!_recoverUnexpectedPause)
+        if (!Settings.RecoverUnexpectedPause)
         {
             _logger.LogInformation("YouTube Music paused by itself; leaving it paused, as this plugin is set to");
             return;

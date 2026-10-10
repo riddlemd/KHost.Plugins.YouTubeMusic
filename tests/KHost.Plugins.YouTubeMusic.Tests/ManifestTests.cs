@@ -1,4 +1,5 @@
 using KHost.Abstractions.Models.Plugins;
+using KHost.Abstractions.Services;
 using System.Text.Json;
 
 namespace KHost.Plugins.YouTubeMusic.Tests;
@@ -16,9 +17,15 @@ public class ManifestTests
 
         Assert.NotEqual(Guid.Empty, manifest.Id);
         Assert.Equal(PluginApi.CurrentVersion, manifest.ApiVersion);
+        Assert.Equal(6, manifest.ApiVersion);
         Assert.Equal("KHost.Plugins.YouTubeMusic.dll", manifest.EntryAssembly);
         Assert.NotEmpty(manifest.Settings);
     }
+
+    // Without it the host binds no settings class and serves the provider no IOptionsMonitor.
+    [Fact]
+    public void EntryPoint_NamesTheSettingsClass()
+        => Assert.True(typeof(IPlugin<YouTubeMusicSettings>).IsAssignableFrom(typeof(YouTubeMusicPlugin)));
 
     [Fact]
     public void Manifest_EverySettingKeyBindsToASettingsProperty()

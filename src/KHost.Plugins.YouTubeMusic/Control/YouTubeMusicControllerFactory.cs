@@ -8,13 +8,13 @@ namespace KHost.Plugins.YouTubeMusic.Control;
 
 public static class YouTubeMusicControllerFactory
 {
-    /// <param name="configuredProfileDirectory">The Edge profile setting as entered; blank picks the
-    /// default. macOS has no profile to choose: the helper app's data store is its own.</param>
+    /// <param name="configuredProfileDirectory">Reads the Edge profile setting as entered, each time the
+    /// profile is needed; blank picks the default. macOS has no profile to choose: the helper app's data store is its own.</param>
     /// <param name="binDirectory">The host's shared bin/, where the macOS helper app is installed.</param>
     /// <param name="pluginDirectory">Where this plugin's files are; defaults to this assembly's folder,
     /// which for a plugin is not the host's AppContext.BaseDirectory.</param>
     public static IYouTubeMusicController ForCurrentPlatform(
-        ILogger logger, string? configuredProfileDirectory, string binDirectory, string? pluginDirectory = null)
+        ILogger logger, Func<string?>? configuredProfileDirectory, string binDirectory, string? pluginDirectory = null)
     {
         if (OperatingSystem.IsMacOS())
             return ForMac(logger, binDirectory, pluginDirectory ?? PluginFolder());
@@ -24,7 +24,7 @@ public static class YouTubeMusicControllerFactory
 
 #if WINDOWS_MEDIA_SESSION
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
-            return new Windows.WindowsYouTubeMusicController(logger, EdgeProfile.Resolve(configuredProfileDirectory));
+            return new Windows.WindowsYouTubeMusicController(logger, () => EdgeProfile.Resolve(configuredProfileDirectory?.Invoke()));
 #endif
 
         return new UnsupportedYouTubeMusicController(

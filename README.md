@@ -124,6 +124,9 @@ song and will be named on Windows; on macOS the page itself says it is an advert
 | Press play again when YouTube Music pauses by itself | on | See below. |
 | Edge profile folder | blank | Windows only. Blank uses `%LOCALAPPDATA%\KHost\youtube-music-profile`. macOS has nothing to set: the app keeps its own data store. |
 
+A saved change applies at once, with no restart of KHost: the next start, launch or unexpected pause
+reads the new value, and a new playlist link or profile folder re-checks the setup warnings.
+
 ## Kiosk notes (Windows)
 
 - The app window can sit behind the karaoke screen. Edge is launched with
