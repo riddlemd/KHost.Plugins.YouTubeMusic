@@ -17,7 +17,7 @@ public class ManifestTests
 
         Assert.NotEqual(Guid.Empty, manifest.Id);
         Assert.Equal(PluginApi.CurrentVersion, manifest.ApiVersion);
-        Assert.Equal(6, manifest.ApiVersion);
+        Assert.Equal(KHost.Abstractions.Models.Plugins.PluginApi.CurrentVersion, manifest.ApiVersion);
         Assert.Equal("KHost.Plugins.YouTubeMusic.dll", manifest.EntryAssembly);
         Assert.NotEmpty(manifest.Settings);
     }
