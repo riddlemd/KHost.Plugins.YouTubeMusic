@@ -1,3 +1,9 @@
+<div align="center">
+
+![KHost.Plugins.YouTubeMusic: tunes while they queue](docs/assets/social-preview.png)
+
+</div>
+
 # KHost.Plugins.YouTubeMusic
 
 Break-music provider for [KHost](https://github.com/riddlemd/KHost). It puts YouTube Music on between singers and fades it
